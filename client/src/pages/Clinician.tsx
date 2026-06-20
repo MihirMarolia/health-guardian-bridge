@@ -40,29 +40,16 @@ const MOCK_INBOX_DOCUMENTS: InboxDocument[] = [
     patientName: 'Jane Smith',
     documentType: 'Discharge Summary',
     timestamp: '2 hours ago',
-    rawText: `DISCHARGE SUMMARY
-Patient: Jane Smith DOB: 03/15/1965
-Admission Date: 2026-06-18
-Discharge Date: 2026-06-20
-
-CHIEF COMPLAINT: Shortness of breath, chest pain
-
-HISTORY OF PRESENT ILLNESS:
-65-year-old female admitted with acute decompensated heart failure.
-Ejection fraction measured at 35% on echocardiogram.
-Patient reports significant SOB with minimal exertion.
-
-ASSESSMENT:
-- Acute systolic heart failure, EF 35%
-- Hypertension, controlled
-- Type 2 Diabetes
-
-RECOMMENDATIONS:
-- Cardiology follow-up URGENT
-- Echocardiogram in 3 months
-- Daily weights, fluid restriction
-
-Attending: Dr. Michael Johnson, MD`,
+    rawText: `RCVD: 2026-06-20 14:32 EST // SENDER: TOH DISCHARGE
+PT: SMITH, JANE // DOB: 1985-03-12 // HC: 1234-567-890
+--------------------------------------------------
+HPI: 41yo F presented to ED w/ worsening SOB x 3 days. Orthopnea (+). 
+ECHO: LVEF 35%, moderate MR. 
+A/P: 
+1. Acute decompensated heart failure. Diuresed w/ IV Lasix. 
+2. Suspected new onset non-ischemic cardiomyopathy.
+PLAN: D/C home on PO Lasix 40mg daily. 
+*** URGENT: Pls f/u with Cardiology outpatient clinic w/in 7-14 days. ***`,
     specialist: 'Cardiology',
     confidence: 95,
     diagnosis: 'Acute Systolic Heart Failure, EF 35%',
@@ -134,7 +121,7 @@ const MOCK_ACTIONS: ActionCard[] = [
     confidence: 95,
     borderColor: '#0A5C79',
     priority: 'high',
-    matchedText: ['EF 35%', 'SOB'],
+    matchedText: ['LVEF 35%', 'URGENT: Pls f/u with Cardiology'],
     requiresReview: false,
     patientName: 'Jane Smith',
   },
@@ -379,9 +366,17 @@ export default function Clinician() {
                     <Lock className="w-4 h-4 text-blue-600" />
                     <p className="text-xs font-semibold text-slate-900">Data Minimization</p>
                   </div>
-                  <Badge variant="outline" className="bg-slate-50">
-                    [REDACTED] PHI Protected
-                  </Badge>
+                  <div className="space-y-3">
+                    <Badge variant="outline" className="bg-slate-50">
+                      [REDACTED] PHI Protected
+                    </Badge>
+                    <div className="bg-slate-50 rounded p-3 border border-slate-200">
+                      <p className="text-xs font-semibold text-slate-700 mb-2">Source Text Highlights:</p>
+                      <p className="text-xs text-slate-600 font-mono">
+                        {selectedAction?.matchedText.map((t) => `\"${t}\"`).join(', ')}
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
                 {/* HITL Verification */}
