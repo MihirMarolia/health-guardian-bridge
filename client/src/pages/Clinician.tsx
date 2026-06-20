@@ -233,7 +233,7 @@ export default function Clinician() {
       toast.success(`⚠️ Offline Mode. Saved locally. Will sync when online.`);
     } else {
       await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
-      toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
+      toast.success(`✅ Secure FHIR ServiceRequest Generated.`);
     }
 
     setVerifiedCheckbox(false);
@@ -390,7 +390,7 @@ export default function Clinician() {
                     />
                     <div className="flex-1">
                       <Label htmlFor="verify" className="text-sm font-semibold text-slate-900 cursor-pointer">
-                        I verify these AI-extracted clinical details
+                        I verify these AI-extracted clinical details and take responsibility for this referral.
                       </Label>
                       <p className="text-xs text-slate-600 mt-1">
                         Human verification required. The AI suggests, you decide.
@@ -402,13 +402,12 @@ export default function Clinician() {
                 {/* Execute Button */}
                 <Button
                   onClick={handleExecuteReferral}
-                  className="w-full rounded-full font-semibold py-5 mt-4"
-                  style={{
-                    backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
-                    opacity: verifiedCheckbox ? 1 : 0.5,
-                    cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
-                    pointerEvents: verifiedCheckbox ? 'auto' : 'none',
-                  }}
+                  disabled={!verifiedCheckbox}
+                  className={`w-full rounded-full font-semibold py-5 mt-4 transition-all duration-200 ${
+                    verifiedCheckbox
+                      ? 'bg-[#0A5C79] text-white hover:bg-[#084563] shadow-md hover:shadow-lg'
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+                  }`}
                 >
                   Execute Referral
                 </Button>
