@@ -1,16 +1,26 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap, Wifi, WifiOff, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { deidentifyText } from '@/lib/deidentify';
 import { logAIParse, logReferralCreation } from '@/lib/auditLogger';
+
+interface InboxDocument {
+  id: string;
+  patientName: string;
+  documentType: string;
+  timestamp: string;
+  rawText: string;
+  specialist?: string;
+  confidence?: number;
+  diagnosis?: string;
+}
 
 interface ActionCard {
   id: string;
@@ -23,6 +33,98 @@ interface ActionCard {
   requiresReview: boolean;
   patientName: string;
 }
+
+const MOCK_INBOX_DOCUMENTS: InboxDocument[] = [
+  {
+    id: '1',
+    patientName: 'Jane Smith',
+    documentType: 'Discharge Summary',
+    timestamp: '2 hours ago',
+    rawText: `DISCHARGE SUMMARY
+Patient: Jane Smith DOB: 03/15/1965
+Admission Date: 2026-06-18
+Discharge Date: 2026-06-20
+
+CHIEF COMPLAINT: Shortness of breath, chest pain
+
+HISTORY OF PRESENT ILLNESS:
+65-year-old female admitted with acute decompensated heart failure.
+Ejection fraction measured at 35% on echocardiogram.
+Patient reports significant SOB with minimal exertion.
+
+ASSESSMENT:
+- Acute systolic heart failure, EF 35%
+- Hypertension, controlled
+- Type 2 Diabetes
+
+RECOMMENDATIONS:
+- Cardiology follow-up URGENT
+- Echocardiogram in 3 months
+- Daily weights, fluid restriction
+
+Attending: Dr. Michael Johnson, MD`,
+    specialist: 'Cardiology',
+    confidence: 95,
+    diagnosis: 'Acute Systolic Heart Failure, EF 35%',
+  },
+  {
+    id: '2',
+    patientName: 'Michael Brown',
+    documentType: 'Lab Order',
+    timestamp: '8 days ago',
+    rawText: `LAB ORDER FORM
+Patient: Michael Brown
+MRN: 456789
+DOB: 07/22/1958
+
+ORDERED TESTS:
+- HbA1c (Hemoglobin A1c)
+- Fasting Glucose
+- Lipid Panel
+- Comprehensive Metabolic Panel
+
+CLINICAL INDICATION:
+Diabetes management, annual physical
+
+Status: PENDING RESULTS
+Expected: 2026-06-22
+
+Ordering Physician: Dr. Sarah Chen, MD`,
+    specialist: 'Internal Medicine',
+    confidence: 100,
+    diagnosis: 'Diabetes follow-up',
+  },
+  {
+    id: '3',
+    patientName: 'Sarah Wilson',
+    documentType: 'Clinical Notes',
+    timestamp: '1 day ago',
+    rawText: `CLINICAL PROGRESS NOTE
+Patient: Sarah Wilson
+Date: 2026-06-19
+
+MEDICATIONS REVIEWED:
+1. Lisinopril 10mg daily
+2. Metformin 1000mg BID
+3. Atorvastatin 20mg daily
+4. Aspirin 81mg daily
+5. Omeprazole 20mg daily
+6. Sertraline 50mg daily
+
+ASSESSMENT:
+Polypharmacy noted. Patient on 6 concurrent medications.
+Recommend pharmacist consultation for medication optimization.
+
+PLAN:
+- Schedule eConsult with Pharmacy
+- Reduce medication burden if possible
+
+Clinician: Dr. Robert Lee, MD`,
+    specialist: 'Pharmacy',
+    confidence: 62,
+    diagnosis: 'Polypharmacy review',
+  },
+];
 
 const MOCK_ACTIONS: ActionCard[] = [
   {
@@ -58,40 +160,18 @@ const MOCK_ACTIONS: ActionCard[] = [
     requiresReview: true,
     patientName: 'Sarah Wilson',
   },
-  {
-    id: '4',
-    title: 'AI Verdict: Dermatology Referral',
-    body: 'Suspicious mole detected on back. Urgent dermatology evaluation recommended.',
-    confidence: 91,
-    borderColor: '#0A5C79',
-    priority: 'high',
-    matchedText: ['suspicious mole', 'back'],
-    requiresReview: false,
-    patientName: 'David Lee',
-  },
-  {
-    id: '5',
-    title: 'System Notice: Pending Result',
-    body: 'Lipid Panel pending. System awaiting lab result from Quest Diagnostics.',
-    confidence: 100,
-    borderColor: '#6B7280',
-    priority: 'info',
-    matchedText: ['Lipid Panel', 'Quest'],
-    requiresReview: false,
-    patientName: 'Emily Davis',
-  },
 ];
 
 export default function Clinician() {
-  const [selectedAction, setSelectedAction] = useState<ActionCard | null>(null);
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState<InboxDocument | null>(MOCK_INBOX_DOCUMENTS[0]);
+  const [selectedAction, setSelectedAction] = useState<ActionCard | null>(MOCK_ACTIONS[0]);
   const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineQueue, setOfflineQueue] = useState<any[]>([]);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'complete'>('idle');
   const [formData, setFormData] = useState({
-    specialist: '',
-    notes: '',
+    specialist: selectedAction?.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
+    notes: selectedAction?.body || '',
   });
 
   // Detect online/offline status
@@ -110,7 +190,6 @@ export default function Clinician() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Load offline queue from localStorage
     const savedQueue = localStorage.getItem('offline_queue');
     if (savedQueue) {
       setOfflineQueue(JSON.parse(savedQueue));
@@ -131,7 +210,6 @@ export default function Clinician() {
 
     setSyncStatus('syncing');
     try {
-      // Simulate API calls for each queued action
       for (const action of offlineQueue) {
         await logReferralCreation(1, `REF-${Date.now()}`, action.patientId, action.specialist);
       }
@@ -145,20 +223,6 @@ export default function Clinician() {
       toast.error('Sync failed. Will retry when connection is stable.');
       setSyncStatus('idle');
     }
-  };
-
-  const handleActionClick = (action: ActionCard) => {
-    setSelectedAction(action);
-    setFormData({
-      specialist: action.title.includes('Cardiology')
-        ? 'Cardiology'
-        : action.title.includes('Dermatology')
-        ? 'Dermatology'
-        : 'Consultation',
-      notes: action.body,
-    });
-    setVerifiedCheckbox(false);
-    setIsSheetOpen(true);
   };
 
   const handleExecuteReferral = async () => {
@@ -176,288 +240,190 @@ export default function Clinician() {
     };
 
     if (!isOnline) {
-      // Save to offline queue
       const newQueue = [...offlineQueue, action];
       setOfflineQueue(newQueue);
       localStorage.setItem('offline_queue', JSON.stringify(newQueue));
       toast.success(`⚠️ Offline Mode. Saved locally. Will sync when online.`);
     } else {
-      // Submit immediately
       await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
       toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
     }
 
-    setIsSheetOpen(false);
     setVerifiedCheckbox(false);
-    setSelectedAction(null);
   };
 
-  const getConfidenceBadgeColor = (confidence: number) => {
-    if (confidence >= 90) return 'bg-green-100 text-green-800';
-    if (confidence >= 70) return 'bg-blue-100 text-blue-800';
-    return 'bg-amber-100 text-amber-800';
-  };
-
-  const getPriorityBadgeColor = (priority: string) => {
-    switch (priority) {
-      case 'urgent':
-        return 'bg-red-100 text-red-800';
-      case 'high':
-        return 'bg-blue-100 text-blue-800';
-      case 'medium':
-        return 'bg-amber-100 text-amber-800';
-      default:
-        return 'bg-slate-100 text-slate-800';
+  const handleSelectDocument = (doc: InboxDocument) => {
+    setSelectedDocument(doc);
+    const matchingAction = MOCK_ACTIONS.find((a) => a.patientName === doc.patientName);
+    if (matchingAction) {
+      setSelectedAction(matchingAction);
+      setFormData({
+        specialist: doc.specialist || 'Consultation',
+        notes: doc.diagnosis || doc.rawText,
+      });
     }
   };
 
   return (
     <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden font-inter">
-      {/* Header */}
-      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-shrink-0 shadow-sm">
-        <h1 className="text-2xl font-bold" style={{ color: '#0A5C79' }}>
-          Health Guardian Bridge
-        </h1>
-        <div className="flex items-center gap-4">
-          {/* Offline Status Indicator */}
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-            isOnline 
-              ? 'bg-green-100 text-green-800' 
-              : 'bg-red-100 text-red-800'
-          }`}>
+      {/* TOP HEADER - Compact Metrics */}
+      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between flex-shrink-0 shadow-sm">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs bg-blue-50">
+            <Zap className="w-3 h-3 mr-1" />
+            Referrals: 12
+          </Badge>
+          <Badge variant="outline" className="text-xs bg-green-50">
+            <CheckCircle2 className="w-3 h-3 mr-1" />
+            Labs: 8
+          </Badge>
+          <Badge variant="outline" className="text-xs bg-amber-50">
+            ⏱️ Time Saved: 3.2 hrs
+          </Badge>
+          <Badge variant="outline" className="text-xs">
             {isOnline ? (
               <>
-                <Wifi className="w-4 h-4" />
+                <Wifi className="w-3 h-3 mr-1" />
                 🟢 Online
               </>
             ) : (
               <>
-                <WifiOff className="w-4 h-4" />
+                <WifiOff className="w-3 h-3 mr-1" />
                 🔴 Offline
               </>
             )}
-          </div>
-          <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
-            <Shield className="w-4 h-4" />
-            🛡️ Audit Session Active
-          </div>
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
+          <Shield className="w-4 h-4" />
+          🛡️ Audit Active
         </div>
       </div>
 
-      {/* Offline Banner */}
-      {!isOnline && (
-        <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center gap-3">
-          <AlertCircle className="w-4 h-4 text-amber-600" />
-          <span className="text-sm text-amber-800">
-            ⚠️ Offline Mode. Changes saved locally. Syncing when connection returns.
-          </span>
-        </div>
-      )}
-
-      {/* Sync Status Banner */}
-      {syncStatus === 'syncing' && (
-        <div className="bg-blue-50 border-b border-blue-200 px-6 py-3 flex items-center gap-3">
-          <Zap className="w-4 h-4 text-blue-600 animate-spin" />
-          <span className="text-sm text-blue-800">Syncing offline changes...</span>
-        </div>
-      )}
-
-      {syncStatus === 'complete' && (
-        <div className="bg-green-50 border-b border-green-200 px-6 py-3 flex items-center gap-3">
-          <CheckCircle2 className="w-4 h-4 text-green-600" />
-          <span className="text-sm text-green-800">✅ Sync Complete. All audit logs saved.</span>
-        </div>
-      )}
-
-      {/* Stats Bar */}
-      <div className="bg-white border-b border-slate-200 px-6 py-5 flex gap-8 flex-shrink-0 shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="p-2.5 bg-blue-100 rounded-lg">
-            <Zap className="w-6 h-6 text-blue-600" />
+      {/* MAIN LAYOUT - Left Pane + Right Pane */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* LEFT PANE - Clinical Inbox */}
+        <div className="w-1/3 border-r border-slate-200 bg-slate-50 flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 bg-white">
+            <h2 className="text-sm font-semibold text-slate-900">Clinical Inbox</h2>
+            <p className="text-xs text-slate-500 mt-1">{MOCK_INBOX_DOCUMENTS.length} documents</p>
           </div>
-          <div>
-            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Referrals Orchestrated</p>
-            <p className="text-3xl font-bold text-[#0A5C79]">12</p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-4">
-          <div className="p-2.5 bg-green-100 rounded-lg">
-            <CheckCircle2 className="w-6 h-6 text-green-600" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Labs Monitored</p>
-            <p className="text-3xl font-bold text-[#0A5C79]">8</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="p-2.5 bg-amber-100 rounded-lg">
-            <AlertCircle className="w-6 h-6 text-amber-600" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">⏱️ Clinical Time Saved</p>
-            <p className="text-3xl font-bold" style={{ color: '#F59E0B' }}>3.2 Hours</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Action Triage Queue - Scrollable */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="space-y-4 max-w-5xl">
-          {MOCK_ACTIONS.map((action) => (
-            <Card
-              key={action.id}
-              className="p-5 rounded-2xl border-l-4 hover:shadow-xl transition-shadow duration-200 cursor-pointer bg-white"
-              style={{ borderLeftColor: action.borderColor }}
-              onClick={() => handleActionClick(action)}
-            >
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <h3 className="font-semibold text-slate-900 text-base">{action.title}</h3>
-                  <p className="text-sm text-slate-500 mt-1">Patient: {action.patientName}</p>
-                </div>
-                <Badge className={`${getPriorityBadgeColor(action.priority)}`}>
-                  {action.priority.charAt(0).toUpperCase() + action.priority.slice(1)}
-                </Badge>
-              </div>
-
-              <p className="text-slate-600 text-sm mb-4">{action.body}</p>
-
-              <div className="flex items-center gap-3 flex-wrap mb-4">
-                <Badge variant="outline" className="bg-slate-50">
-                  🛡️ PII Protected
-                </Badge>
-                <Badge variant="outline" className={getConfidenceBadgeColor(action.confidence)}>
-                  ✅ Confidence {action.confidence}%
-                </Badge>
-                {action.requiresReview && (
-                  <Badge variant="outline" className="bg-amber-50">
-                    ⚖️ Human Review Required
-                  </Badge>
-                )}
-              </div>
-
-              <div className="text-xs text-slate-500 mb-4">
-                Matched text: {action.matchedText.map((t) => `"${t}"`).join(', ')}
-              </div>
-
-              <Button
-                className="w-full rounded-full font-semibold"
-                variant="outline"
-                style={{ borderColor: action.borderColor, color: action.borderColor }}
+          {/* Scrollable Inbox List */}
+          <div className="flex-1 overflow-y-auto">
+            {MOCK_INBOX_DOCUMENTS.map((doc) => (
+              <div
+                key={doc.id}
+                onClick={() => handleSelectDocument(doc)}
+                className={`px-4 py-3 border-b border-slate-200 cursor-pointer transition-colors ${
+                  selectedDocument?.id === doc.id
+                    ? 'bg-blue-50 border-l-4 border-l-blue-600'
+                    : 'hover:bg-slate-100'
+                }`}
               >
-                Review & Execute
-              </Button>
-            </Card>
-          ))}
+                <div className="flex items-start gap-2">
+                  <FileText className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 truncate">{doc.patientName}</p>
+                    <p className="text-xs text-slate-500 truncate">{doc.documentType}</p>
+                    <p className="text-xs text-slate-400 mt-1">{doc.timestamp}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* RIGHT PANE - Active Workspace */}
+        <div className="w-2/3 flex flex-col overflow-hidden">
+          {/* TOP HALF - Raw Document Viewer */}
+          <div className="h-1/2 p-6 bg-white border-b border-slate-200 overflow-y-auto">
+            <h3 className="text-sm font-semibold text-slate-900 mb-4">Raw Document Viewer</h3>
+            {selectedDocument ? (
+              <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap break-words bg-slate-50 p-4 rounded-lg border border-slate-200 max-h-full overflow-y-auto">
+                {selectedDocument.rawText}
+              </pre>
+            ) : (
+              <p className="text-sm text-slate-500">Select a document to view</p>
+            )}
+          </div>
+
+          {/* BOTTOM HALF - OpenMed AI Orchestrator */}
+          <div className="h-1/2 p-6 bg-[#E8F4F8] overflow-y-auto flex flex-col">
+            <h3 className="text-sm font-semibold text-slate-900 mb-4">OpenMed AI Orchestrator</h3>
+
+            {selectedAction ? (
+              <div className="space-y-4 flex-1">
+                {/* AI Analysis Card */}
+                <Card className="p-4 bg-white border border-slate-200">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Extracted Specialist</p>
+                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument?.specialist}</p>
+                    </div>
+                    <Badge className="bg-green-100 text-green-800">
+                      ✅ {selectedAction.confidence}%
+                    </Badge>
+                  </div>
+                </Card>
+
+                {/* Diagnosis Card */}
+                <Card className="p-4 bg-white border border-slate-200">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Diagnosis</p>
+                  <p className="text-sm text-slate-900 mt-2">{selectedDocument?.diagnosis}</p>
+                </Card>
+
+                {/* PII Protection Badge */}
+                <div className="bg-white border border-slate-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Lock className="w-4 h-4 text-blue-600" />
+                    <p className="text-xs font-semibold text-slate-900">Data Minimization</p>
+                  </div>
+                  <Badge variant="outline" className="bg-slate-50">
+                    [REDACTED] PHI Protected
+                  </Badge>
+                </div>
+
+                {/* HITL Verification */}
+                <div className="bg-white border border-slate-200 rounded-lg p-4 mt-4">
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id="verify"
+                      checked={verifiedCheckbox}
+                      onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
+                      className="mt-1"
+                    />
+                    <div className="flex-1">
+                      <Label htmlFor="verify" className="text-sm font-semibold text-slate-900 cursor-pointer">
+                        I verify these AI-extracted clinical details
+                      </Label>
+                      <p className="text-xs text-slate-600 mt-1">
+                        Human verification required. The AI suggests, you decide.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Execute Button */}
+                <Button
+                  onClick={handleExecuteReferral}
+                  className="w-full rounded-full font-semibold py-5 mt-4"
+                  style={{
+                    backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
+                    opacity: verifiedCheckbox ? 1 : 0.5,
+                    cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
+                    pointerEvents: verifiedCheckbox ? 'auto' : 'none',
+                  }}
+                >
+                  Execute Referral
+                </Button>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">Select a document to view AI analysis</p>
+            )}
+          </div>
         </div>
       </div>
-
-      {/* Calibrated Trust Slide-out */}
-      <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
-        <SheetContent side="right" className="w-full sm:w-[600px] overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle className="flex items-center gap-2">
-              <Eye className="w-5 h-5" style={{ color: '#0A5C79' }} />
-              Calibrated Trust: AI Transparency & Reasoning
-            </SheetTitle>
-            <SheetDescription>
-              Review AI-extracted clinical details before execution
-            </SheetDescription>
-          </SheetHeader>
-
-          <div className="mt-6 space-y-6">
-            {/* Glass Box - AI Transparency */}
-            <div className="bg-gradient-to-br from-blue-50 to-slate-50 border border-blue-200 rounded-xl p-5">
-              <div className="flex items-start gap-3">
-                <Lock className="w-5 h-5 text-blue-600 mt-1 flex-shrink-0" />
-                <div>
-                  <h4 className="font-semibold text-slate-900 mb-2">AI Transparency & Reasoning</h4>
-                  <p className="text-sm text-slate-600 mb-4">
-                    The AI examined the de‑identified clinical text. No patient PII was exposed to the model.
-                  </p>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Badge variant="outline" className="bg-slate-100">
-                      [REDACTED]
-                    </Badge>
-                    <span className="text-xs text-slate-500">PHI Redacted Before Processing</span>
-                  </div>
-                  <div className="bg-white rounded-lg p-3 border border-slate-200">
-                    <p className="text-xs font-mono text-slate-600">
-                      <strong>Source Text Highlights:</strong>
-                      <br />
-                      {selectedAction?.matchedText.map((t) => `"${t}"`).join(', ')}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Form */}
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="specialist" className="font-semibold text-slate-900">
-                  Specialist
-                </Label>
-                <Input
-                  id="specialist"
-                  value={formData.specialist}
-                  onChange={(e) => setFormData({ ...formData, specialist: e.target.value })}
-                  className="mt-2"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="notes" className="font-semibold text-slate-900">
-                  Clinical Notes
-                </Label>
-                <Textarea
-                  id="notes"
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  className="mt-2"
-                  rows={4}
-                />
-              </div>
-            </div>
-
-            {/* HITL Verification */}
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                <Checkbox
-                  id="verify"
-                  checked={verifiedCheckbox}
-                  onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
-                  className="mt-1"
-                />
-                <div className="flex-1">
-                  <Label htmlFor="verify" className="font-semibold text-slate-900 cursor-pointer">
-                    I verify these AI-extracted clinical details
-                  </Label>
-                  <p className="text-xs text-slate-600 mt-1">
-                    Human verification required. The AI suggests, you decide.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Execute Button */}
-            <Button
-              onClick={handleExecuteReferral}
-              className="w-full rounded-full font-semibold py-6"
-              style={{
-                backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
-                opacity: verifiedCheckbox ? 1 : 0.5,
-                cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
-                pointerEvents: verifiedCheckbox ? 'auto' : 'none',
-              }}
-            >
-              Execute Referral
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }
