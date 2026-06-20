@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap, Wifi, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { deidentifyText } from '@/lib/deidentify';
 import { logAIParse, logReferralCreation } from '@/lib/auditLogger';
@@ -18,9 +18,10 @@ interface ActionCard {
   body: string;
   confidence: number;
   borderColor: string;
-  priority: 'high' | 'urgent' | 'medium';
+  priority: 'high' | 'urgent' | 'medium' | 'info';
   matchedText: string[];
   requiresReview: boolean;
+  patientName: string;
 }
 
 const MOCK_ACTIONS: ActionCard[] = [
@@ -33,6 +34,7 @@ const MOCK_ACTIONS: ActionCard[] = [
     priority: 'high',
     matchedText: ['EF 35%', 'SOB'],
     requiresReview: false,
+    patientName: 'Jane Smith',
   },
   {
     id: '2',
@@ -43,16 +45,40 @@ const MOCK_ACTIONS: ActionCard[] = [
     priority: 'urgent',
     matchedText: ['HbA1c', '8 days'],
     requiresReview: false,
+    patientName: 'Michael Brown',
   },
   {
     id: '3',
-    title: 'AI Triage: eConsult Recommendation',
+    title: 'AI Triage: Low Confidence eConsult',
     body: 'Polypharmacy detected (6 medications). Suggesting Pharmacist eConsult.',
-    confidence: 68,
+    confidence: 62,
     borderColor: '#F59E0B',
     priority: 'medium',
     matchedText: ['6 medications', 'polypharmacy'],
     requiresReview: true,
+    patientName: 'Sarah Wilson',
+  },
+  {
+    id: '4',
+    title: 'AI Verdict: Dermatology Referral',
+    body: 'Suspicious mole detected on back. Urgent dermatology evaluation recommended.',
+    confidence: 91,
+    borderColor: '#0A5C79',
+    priority: 'high',
+    matchedText: ['suspicious mole', 'back'],
+    requiresReview: false,
+    patientName: 'David Lee',
+  },
+  {
+    id: '5',
+    title: 'System Notice: Pending Result',
+    body: 'Lipid Panel pending. System awaiting lab result from Quest Diagnostics.',
+    confidence: 100,
+    borderColor: '#6B7280',
+    priority: 'info',
+    matchedText: ['Lipid Panel', 'Quest'],
+    requiresReview: false,
+    patientName: 'Emily Davis',
   },
 ];
 
@@ -60,15 +86,75 @@ export default function Clinician() {
   const [selectedAction, setSelectedAction] = useState<ActionCard | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [offlineQueue, setOfflineQueue] = useState<any[]>([]);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'complete'>('idle');
   const [formData, setFormData] = useState({
     specialist: '',
     notes: '',
   });
 
+  // Detect online/offline status
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      toast.success('✅ Connection restored. Syncing changes...');
+      syncOfflineQueue();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      toast.error('⚠️ Offline Mode. Changes saved locally.');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Load offline queue from localStorage
+    const savedQueue = localStorage.getItem('offline_queue');
+    if (savedQueue) {
+      setOfflineQueue(JSON.parse(savedQueue));
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const syncOfflineQueue = async () => {
+    if (offlineQueue.length === 0) {
+      setSyncStatus('complete');
+      setTimeout(() => setSyncStatus('idle'), 3000);
+      return;
+    }
+
+    setSyncStatus('syncing');
+    try {
+      // Simulate API calls for each queued action
+      for (const action of offlineQueue) {
+        await logReferralCreation(1, `REF-${Date.now()}`, action.patientId, action.specialist);
+      }
+      setOfflineQueue([]);
+      localStorage.removeItem('offline_queue');
+      setSyncStatus('complete');
+      toast.success('✅ Sync Complete. All audit logs saved.');
+      setTimeout(() => setSyncStatus('idle'), 3000);
+    } catch (error) {
+      console.error('Sync failed:', error);
+      toast.error('Sync failed. Will retry when connection is stable.');
+      setSyncStatus('idle');
+    }
+  };
+
   const handleActionClick = (action: ActionCard) => {
     setSelectedAction(action);
     setFormData({
-      specialist: action.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
+      specialist: action.title.includes('Cardiology')
+        ? 'Cardiology'
+        : action.title.includes('Dermatology')
+        ? 'Dermatology'
+        : 'Consultation',
       notes: action.body,
     });
     setVerifiedCheckbox(false);
@@ -82,11 +168,25 @@ export default function Clinician() {
     }
 
     const auditId = `REF-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
-    
-    await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
-    
-    toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
-    
+    const action = {
+      auditId,
+      patientId: 'patient-1',
+      specialist: formData.specialist,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (!isOnline) {
+      // Save to offline queue
+      const newQueue = [...offlineQueue, action];
+      setOfflineQueue(newQueue);
+      localStorage.setItem('offline_queue', JSON.stringify(newQueue));
+      toast.success(`⚠️ Offline Mode. Saved locally. Will sync when online.`);
+    } else {
+      // Submit immediately
+      await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
+      toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
+    }
+
     setIsSheetOpen(false);
     setVerifiedCheckbox(false);
     setSelectedAction(null);
@@ -98,80 +198,133 @@ export default function Clinician() {
     return 'bg-amber-100 text-amber-800';
   };
 
+  const getPriorityBadgeColor = (priority: string) => {
+    switch (priority) {
+      case 'urgent':
+        return 'bg-red-100 text-red-800';
+      case 'high':
+        return 'bg-blue-100 text-blue-800';
+      case 'medium':
+        return 'bg-amber-100 text-amber-800';
+      default:
+        return 'bg-slate-100 text-slate-800';
+    }
+  };
+
   return (
-    <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden">
+    <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden font-inter">
       {/* Header */}
-      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-shrink-0 shadow-sm">
         <h1 className="text-2xl font-bold" style={{ color: '#0A5C79' }}>
           Health Guardian Bridge
         </h1>
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
-          <Shield className="w-4 h-4" />
-          🛡️ Audit Session Active
+        <div className="flex items-center gap-4">
+          {/* Offline Status Indicator */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+            isOnline 
+              ? 'bg-green-100 text-green-800' 
+              : 'bg-red-100 text-red-800'
+          }`}>
+            {isOnline ? (
+              <>
+                <Wifi className="w-4 h-4" />
+                🟢 Online
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-4 h-4" />
+                🔴 Offline
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
+            <Shield className="w-4 h-4" />
+            🛡️ Audit Session Active
+          </div>
         </div>
       </div>
 
+      {/* Offline Banner */}
+      {!isOnline && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center gap-3">
+          <AlertCircle className="w-4 h-4 text-amber-600" />
+          <span className="text-sm text-amber-800">
+            ⚠️ Offline Mode. Changes saved locally. Syncing when connection returns.
+          </span>
+        </div>
+      )}
+
+      {/* Sync Status Banner */}
+      {syncStatus === 'syncing' && (
+        <div className="bg-blue-50 border-b border-blue-200 px-6 py-3 flex items-center gap-3">
+          <Zap className="w-4 h-4 text-blue-600 animate-spin" />
+          <span className="text-sm text-blue-800">Syncing offline changes...</span>
+        </div>
+      )}
+
+      {syncStatus === 'complete' && (
+        <div className="bg-green-50 border-b border-green-200 px-6 py-3 flex items-center gap-3">
+          <CheckCircle2 className="w-4 h-4 text-green-600" />
+          <span className="text-sm text-green-800">✅ Sync Complete. All audit logs saved.</span>
+        </div>
+      )}
+
       {/* Stats Bar */}
-      <div className="bg-white border-b border-slate-200 px-6 py-4 flex gap-6 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-100 rounded-lg">
-            <Zap className="w-5 h-5 text-blue-600" />
+      <div className="bg-white border-b border-slate-200 px-6 py-5 flex gap-8 flex-shrink-0 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 bg-blue-100 rounded-lg">
+            <Zap className="w-6 h-6 text-blue-600" />
           </div>
           <div>
-            <p className="text-xs text-slate-500 font-medium">Referrals Orchestrated</p>
-            <p className="text-lg font-bold text-slate-900">12</p>
+            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Referrals Orchestrated</p>
+            <p className="text-3xl font-bold text-[#0A5C79]">12</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-green-100 rounded-lg">
-            <CheckCircle2 className="w-5 h-5 text-green-600" />
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 bg-green-100 rounded-lg">
+            <CheckCircle2 className="w-6 h-6 text-green-600" />
           </div>
           <div>
-            <p className="text-xs text-slate-500 font-medium">Labs Monitored</p>
-            <p className="text-lg font-bold text-slate-900">8</p>
+            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Labs Monitored</p>
+            <p className="text-3xl font-bold text-[#0A5C79]">8</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-amber-100 rounded-lg">
-            <AlertCircle className="w-5 h-5 text-amber-600" />
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 bg-amber-100 rounded-lg">
+            <AlertCircle className="w-6 h-6 text-amber-600" />
           </div>
           <div>
-            <p className="text-xs text-slate-500 font-medium">⏱️ Clinical Time Saved</p>
-            <p className="text-lg font-bold" style={{ color: '#F59E0B' }}>3.2 Hours</p>
+            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">⏱️ Clinical Time Saved</p>
+            <p className="text-3xl font-bold" style={{ color: '#F59E0B' }}>3.2 Hours</p>
           </div>
         </div>
       </div>
 
       {/* Action Triage Queue - Scrollable */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="space-y-4 max-w-4xl">
+        <div className="space-y-4 max-w-5xl">
           {MOCK_ACTIONS.map((action) => (
             <Card
               key={action.id}
-              className="p-5 rounded-xl border-l-4 hover:shadow-md transition-all cursor-pointer bg-white"
+              className="p-5 rounded-2xl border-l-4 hover:shadow-xl transition-shadow duration-200 cursor-pointer bg-white"
               style={{ borderLeftColor: action.borderColor }}
               onClick={() => handleActionClick(action)}
             >
               <div className="flex items-start justify-between mb-3">
-                <h3 className="font-semibold text-slate-900 text-base">{action.title}</h3>
-                <Badge
-                  className={`${
-                    action.priority === 'urgent'
-                      ? 'bg-red-100 text-red-800'
-                      : action.priority === 'high'
-                      ? 'bg-blue-100 text-blue-800'
-                      : 'bg-amber-100 text-amber-800'
-                  }`}
-                >
+                <div>
+                  <h3 className="font-semibold text-slate-900 text-base">{action.title}</h3>
+                  <p className="text-sm text-slate-500 mt-1">Patient: {action.patientName}</p>
+                </div>
+                <Badge className={`${getPriorityBadgeColor(action.priority)}`}>
                   {action.priority.charAt(0).toUpperCase() + action.priority.slice(1)}
                 </Badge>
               </div>
 
               <p className="text-slate-600 text-sm mb-4">{action.body}</p>
 
-              <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap mb-4">
                 <Badge variant="outline" className="bg-slate-50">
                   🛡️ PII Protected
                 </Badge>
@@ -185,12 +338,12 @@ export default function Clinician() {
                 )}
               </div>
 
-              <div className="mt-3 text-xs text-slate-500">
+              <div className="text-xs text-slate-500 mb-4">
                 Matched text: {action.matchedText.map((t) => `"${t}"`).join(', ')}
               </div>
 
               <Button
-                className="mt-4 w-full rounded-lg border-2"
+                className="w-full rounded-full font-semibold"
                 variant="outline"
                 style={{ borderColor: action.borderColor, color: action.borderColor }}
               >
@@ -292,10 +445,11 @@ export default function Clinician() {
             {/* Execute Button */}
             <Button
               onClick={handleExecuteReferral}
-              className="w-full rounded-lg font-semibold py-6"
+              className="w-full rounded-full font-semibold py-6"
               style={{
                 backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
                 opacity: verifiedCheckbox ? 1 : 0.5,
+                cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
                 pointerEvents: verifiedCheckbox ? 'auto' : 'none',
               }}
             >
