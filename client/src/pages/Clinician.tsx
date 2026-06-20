@@ -2,14 +2,40 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap, Wifi, WifiOff, FileText } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Shield,
+  Lock,
+  Zap,
+  Wifi,
+  WifiOff,
+  FileText,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  Clock3,
+  UserCircle2,
+  Stethoscope,
+} from 'lucide-react';
 import { toast } from 'sonner';
-import { deidentifyText } from '@/lib/deidentify';
-import { logAIParse, logReferralCreation } from '@/lib/auditLogger';
+import { logAction, logReferralCreation } from '@/lib/auditLogger';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface InboxDocument {
   id: string;
@@ -149,17 +175,97 @@ const MOCK_ACTIONS: ActionCard[] = [
   },
 ];
 
+const PRIORITY_LABELS: Record<ActionCard['priority'], { label: string; classes: string }> = {
+  high: { label: 'High Priority', classes: 'bg-blue-100 text-blue-800' },
+  urgent: { label: 'Urgent', classes: 'bg-red-100 text-red-800' },
+  medium: { label: 'Medium', classes: 'bg-amber-100 text-amber-800' },
+  info: { label: 'Info', classes: 'bg-slate-100 text-slate-800' },
+};
+
+const redactSourceText = (text: string) => {
+  let redacted = text;
+
+  redacted = redacted.replace(/\b(?:HC|healthCard|MRN)\s*[:#-]?\s*\d{4}[- ]?\d{3}[- ]?\d{3}\b/gi, '[REDACTED HEALTHCARD]');
+  redacted = redacted.replace(/\b(?:Patient|PT)\s*[: ]+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g, 'Patient: [REDACTED NAME]');
+  redacted = redacted.replace(/\b([A-Z][a-z]+)\s*,\s*([A-Z][a-z]+)\b/g, '[REDACTED NAME]');
+  redacted = redacted.replace(/\b(?:Dr\.?|Doctor)\s+[A-Z][a-z]+\s+[A-Z][a-z]+\b/g, '[REDACTED NAME]');
+  redacted = redacted.replace(/\b(?:\+?1[-.\s]?)?(?:\(?\d{2,3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED PHONE]');
+
+  return redacted;
+};
+
+const renderRedactedSource = (text: string) => {
+  const redactedText = redactSourceText(text);
+  const terms = [
+    'LVEF 35%',
+    'EF 35%',
+    'SOB',
+    'Orthopnea',
+    'Cardiology',
+    'Lasix',
+    'IV',
+    'PO',
+    'HPI',
+    'A/P',
+    'MR',
+    'ED',
+    'eConsult',
+  ];
+  const pattern = new RegExp(`(${terms.join('|')})`, 'gi');
+  const parts = redactedText.split(pattern);
+
+  return parts.map((part, index) => {
+    if (index % 2 === 1 && part.match(pattern)) {
+      return (
+        <span key={`${part}-${index}`} className="bg-yellow-200 px-1 rounded">
+          {part}
+        </span>
+      );
+    }
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
+};
+
+const highlightClinicalTerms = (text: string) => {
+  const terms = [
+    'LVEF 35%',
+    'EF 35%',
+    'SOB',
+    'Orthopnea',
+    'Cardiology',
+    'Lasix',
+    'IV',
+    'PO',
+    'HPI',
+    'A/P',
+    'MR',
+    'ED',
+    'eConsult',
+  ];
+  const pattern = new RegExp(`(${terms.join('|')})`, 'gi');
+  const parts = text.split(pattern);
+
+  return parts.map((part, index) => {
+    if (index % 2 === 1 && part.match(pattern)) {
+      return (
+        <span key={`${part}-${index}`} className="bg-yellow-200 px-1 rounded">
+          {part}
+        </span>
+      );
+    }
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
+};
+
 export default function Clinician() {
-  const [selectedDocument, setSelectedDocument] = useState<InboxDocument | null>(MOCK_INBOX_DOCUMENTS[0]);
-  const [selectedAction, setSelectedAction] = useState<ActionCard | null>(MOCK_ACTIONS[0]);
+  const [expandedActionId, setExpandedActionId] = useState<string | null>(MOCK_ACTIONS[0]?.id ?? null);
+  const [selectedDocument, setSelectedDocument] = useState<InboxDocument | null>(null);
+  const [dispatchChannel, setDispatchChannel] = useState('OceanMD eReferral');
   const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineQueue, setOfflineQueue] = useState<any[]>([]);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'complete'>('idle');
-  const [formData, setFormData] = useState({
-    specialist: selectedAction?.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
-    notes: selectedAction?.body || '',
-  });
+  const [showTour, setShowTour] = useState(false);
 
   // Detect online/offline status
   useEffect(() => {
@@ -212,213 +318,382 @@ export default function Clinician() {
     }
   };
 
-  const handleExecuteReferral = async () => {
+  const handleExecuteReferral = async (action: ActionCard) => {
     if (!verifiedCheckbox) {
       toast.error('Please verify the AI-extracted details');
       return;
     }
 
     const auditId = `REF-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
-    const action = {
+    const actionRecord = {
       auditId,
       patientId: 'patient-1',
-      specialist: formData.specialist,
+      specialist: action.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
       timestamp: new Date().toISOString(),
     };
 
     if (!isOnline) {
-      const newQueue = [...offlineQueue, action];
+      const newQueue = [...offlineQueue, actionRecord];
       setOfflineQueue(newQueue);
       localStorage.setItem('offline_queue', JSON.stringify(newQueue));
       toast.success(`⚠️ Offline Mode. Saved locally. Will sync when online.`);
     } else {
-      await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
-      toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
+      await logReferralCreation(1, auditId, 'patient-1', actionRecord.specialist);
+      await logAction({
+        actorId: 1,
+        action: 'CREATE_REFERRAL',
+        resourceType: 'referral',
+        resourceId: auditId,
+        details: {
+          patientId: 'patient-1',
+          specialistDomain: actionRecord.specialist,
+          dispatchChannel,
+          timestamp: new Date().toISOString(),
+        },
+      });
+      toast.success(`✅ Referral submitted via ${dispatchChannel}. Audit Log #${auditId} recorded.`);
     }
 
     setVerifiedCheckbox(false);
   };
 
-  const handleSelectDocument = (doc: InboxDocument) => {
-    setSelectedDocument(doc);
-    const matchingAction = MOCK_ACTIONS.find((a) => a.patientName === doc.patientName);
-    if (matchingAction) {
-      setSelectedAction(matchingAction);
-      setFormData({
-        specialist: doc.specialist || 'Consultation',
-        notes: doc.diagnosis || doc.rawText,
-      });
-    }
+  const toggleExpand = (id: string) => {
+    setExpandedActionId((prev) => (prev === id ? null : id));
+    setVerifiedCheckbox(false);
   };
 
   return (
-    <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden font-inter">
-      {/* TOP HEADER - Compact Metrics */}
-      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between flex-shrink-0 shadow-sm">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs bg-blue-50">
-            <Zap className="w-3 h-3 mr-1" />
-            Referrals: 12
-          </Badge>
-          <Badge variant="outline" className="text-xs bg-green-50">
-            <CheckCircle2 className="w-3 h-3 mr-1" />
-            Labs: 8
-          </Badge>
-          <Badge variant="outline" className="text-xs bg-amber-50">
-            ⏱️ Time Saved: 3.2 hrs
-          </Badge>
-          <Badge variant="outline" className="text-xs">
-            {isOnline ? (
-              <>
-                <Wifi className="w-3 h-3 mr-1" />
-                🟢 Online
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-3 h-3 mr-1" />
-                🔴 Offline
-              </>
+    <div className="h-screen flex flex-col overflow-hidden bg-slate-50 font-inter">
+      {/* STATS BAR */}
+      <div className="flex-none p-6 border-b bg-white shadow-sm z-10">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="text-xs bg-blue-50">
+              <Zap className="w-3 h-3 mr-1" />
+              Referrals: 12
+            </Badge>
+            <Badge variant="outline" className="text-xs bg-green-50">
+              <CheckCircle2 className="w-3 h-3 mr-1" />
+              Labs: 8
+            </Badge>
+            <Badge variant="outline" className="text-xs bg-amber-50">
+              ⏱️ Time Saved: 3.2 hrs
+            </Badge>
+            <Badge variant="outline" className="text-xs">
+              {isOnline ? (
+                <>
+                  <Wifi className="w-3 h-3 mr-1" />
+                  🟢 Online
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3 mr-1" />
+                  🔴 Offline
+                </>
+              )}
+            </Badge>
+            {syncStatus === 'syncing' && (
+              <Badge variant="outline" className="text-xs bg-blue-50 animate-pulse">
+                🔄 Syncing...
+              </Badge>
             )}
-          </Badge>
-        </div>
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
-          <Shield className="w-4 h-4" />
-          🛡️ Audit Active
+            {syncStatus === 'complete' && (
+              <Badge variant="outline" className="text-xs bg-green-50">
+                ✅ Synced
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
+              <Shield className="w-4 h-4" />
+              🛡️ Audit Active
+            </div>
+            <button
+              onClick={() => setShowTour(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+              title="Responsible AI Tour"
+              aria-label="Start Responsible AI Tour"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* MAIN LAYOUT - Left Pane + Right Pane */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* LEFT PANE - Clinical Inbox */}
-        <div className="w-1/3 border-r border-slate-200 bg-slate-50 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-200 bg-white">
-            <h2 className="text-sm font-semibold text-slate-900">Clinical Inbox</h2>
-            <p className="text-xs text-slate-500 mt-1">{MOCK_INBOX_DOCUMENTS.length} documents</p>
-          </div>
+      {/* ACTION CARDS CONTAINER (Allow internal scrolling only) */}
+      <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-4 custom-scrollbar pt-6">
+        {MOCK_ACTIONS.map((action) => {
+          const document = MOCK_INBOX_DOCUMENTS.find((d) => d.patientName === action.patientName);
+          const isExpanded = expandedActionId === action.id;
+          const priority = PRIORITY_LABELS[action.priority];
 
-          {/* Scrollable Inbox List */}
-          <div className="flex-1 overflow-y-auto">
-            {MOCK_INBOX_DOCUMENTS.map((doc) => (
+          return (
+            <Card
+              key={action.id}
+              className="bg-white rounded-2xl shadow-md border-l-4 p-5 transition-all hover:shadow-xl"
+              style={{ borderLeftColor: action.borderColor }}
+            >
+              {/* Card Header (clickable) */}
               <div
-                key={doc.id}
-                onClick={() => handleSelectDocument(doc)}
-                className={`px-4 py-3 border-b border-slate-200 cursor-pointer transition-colors ${
-                  selectedDocument?.id === doc.id
-                    ? 'bg-blue-50 border-l-4 border-l-blue-600'
-                    : 'hover:bg-slate-100'
-                }`}
+                className="cursor-pointer"
+                onClick={() => toggleExpand(action.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleExpand(action.id);
+                  }
+                }}
               >
-                <div className="flex items-start gap-2">
-                  <FileText className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-900 truncate">{doc.patientName}</p>
-                    <p className="text-xs text-slate-500 truncate">{doc.documentType}</p>
-                    <p className="text-xs text-slate-400 mt-1">{doc.timestamp}</p>
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <Badge className={`text-xs ${priority.classes}`}>{priority.label}</Badge>
+                      {action.requiresReview && (
+                        <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700">
+                          <AlertCircle className="w-3 h-3 mr-1" />
+                          Review Required
+                        </Badge>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedDocument(document ?? null);
+                        }}
+                        className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-blue-700 transition-colors"
+                      >
+                        <FileText className="w-3 h-3" />
+                        {action.patientName}
+                      </button>
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 mb-1">{action.title}</h3>
+                    <p className="text-sm text-slate-600">{action.body}</p>
+                  </div>
+                  <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                    <Badge
+                      className={
+                        action.confidence >= 90
+                          ? 'bg-green-100 text-green-800'
+                          : action.confidence >= 70
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-red-100 text-red-800'
+                      }
+                    >
+                      ✅ {action.confidence}%
+                    </Badge>
+                    {isExpanded ? (
+                      <ChevronUp className="w-5 h-5 text-slate-400" />
+                    ) : (
+                      <ChevronDown className="w-5 h-5 text-slate-400" />
+                    )}
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* RIGHT PANE - Active Workspace */}
-        <div className="w-2/3 flex flex-col overflow-hidden">
-          {/* TOP HALF - Raw Document Viewer */}
-          <div className="h-1/2 p-6 bg-white border-b border-slate-200 overflow-y-auto">
-            <h3 className="text-sm font-semibold text-slate-900 mb-4">Raw Document Viewer</h3>
-            {selectedDocument ? (
-              <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap break-words bg-slate-50 p-4 rounded-lg border border-slate-200 max-h-full overflow-y-auto">
-                {selectedDocument.rawText}
-              </pre>
-            ) : (
-              <p className="text-sm text-slate-500">Select a document to view</p>
-            )}
-          </div>
-
-          {/* BOTTOM HALF - OpenMed AI Orchestrator */}
-          <div className="h-1/2 p-6 bg-[#E8F4F8] overflow-y-auto flex flex-col">
-            <h3 className="text-sm font-semibold text-slate-900 mb-4">OpenMed AI Orchestrator</h3>
-
-            {selectedAction ? (
-              <div className="space-y-4 flex-1">
-                {/* AI Analysis Card */}
-                <Card className="p-4 bg-white border border-slate-200">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Extracted Specialist</p>
-                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument?.specialist}</p>
+              {/* Expanded Detail View */}
+              {isExpanded && document && (
+                <div className="mt-5 pt-5 border-t border-slate-200 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                        Extracted Specialist
+                      </p>
+                      <p className="text-sm font-bold text-slate-900 mt-1">{document.specialist}</p>
                     </div>
-                    <Badge className="bg-green-100 text-green-800">
-                      ✅ {selectedAction.confidence}%
-                    </Badge>
+                    <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Diagnosis</p>
+                      <p className="text-sm text-slate-900 mt-1">{document.diagnosis}</p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setSelectedDocument(document)}
+                    className="w-full rounded-full"
+                  >
+                    Open Review & Execute Panel
+                  </Button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      <Sheet open={!!selectedDocument} onOpenChange={(open) => !open && setSelectedDocument(null)}>
+        <SheetContent side="right" className="w-full sm:max-w-5xl overflow-y-auto">
+          {selectedDocument && (
+            <div className="space-y-6 py-2">
+              <SheetHeader>
+                <SheetTitle className="text-2xl">{selectedDocument.patientName}</SheetTitle>
+                <SheetDescription>
+                  {selectedDocument.documentType} • {selectedDocument.timestamp}
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card className="p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+                    <UserCircle2 className="w-4 h-4" />
+                    Care Team
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div>
+                        <p className="text-sm font-semibold">Dr. Robert Lee</p>
+                        <p className="text-xs text-slate-500">Primary Care</p>
+                      </div>
+                      <Stethoscope className="w-4 h-4 text-slate-400" />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div>
+                        <p className="text-sm font-semibold">Cardiology Consult</p>
+                        <p className="text-xs text-slate-500">Recommended Specialist</p>
+                      </div>
+                      <Shield className="w-4 h-4 text-slate-400" />
+                    </div>
                   </div>
                 </Card>
-
-                {/* Diagnosis Card */}
-                <Card className="p-4 bg-white border border-slate-200">
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Diagnosis</p>
-                  <p className="text-sm text-slate-900 mt-2">{selectedDocument?.diagnosis}</p>
-                </Card>
-
-                {/* PII Protection Badge */}
-                <div className="bg-white border border-slate-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Lock className="w-4 h-4 text-blue-600" />
-                    <p className="text-xs font-semibold text-slate-900">Data Minimization</p>
+                <Card className="p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+                    <Clock3 className="w-4 h-4" />
+                    Timeline Snapshot
                   </div>
-                  <div className="space-y-3">
+                  <div className="mt-3 space-y-3 text-sm text-slate-600">
+                    <div className="flex items-start gap-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-500 mt-2" />
+                      <span>Hospital discharge summary received 2 hours ago</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="w-2 h-2 rounded-full bg-green-500 mt-2" />
+                      <span>Lab review flagged for cardiology follow-up</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="w-2 h-2 rounded-full bg-amber-500 mt-2" />
+                      <span>Referral pending clinician verification</span>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-slate-50 rounded-xl border p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Original Source</p>
                     <Badge variant="outline" className="bg-slate-50">
                       [REDACTED] PHI Protected
                     </Badge>
-                    <div className="bg-slate-50 rounded p-3 border border-slate-200">
-                      <p className="text-xs font-semibold text-slate-700 mb-2">Source Text Highlights:</p>
-                      <p className="text-xs text-slate-600 font-mono">
-                        {selectedAction?.matchedText.map((t) => `\"${t}\"`).join(', ')}
-                      </p>
-                    </div>
+                  </div>
+                  <div className="text-xs font-mono text-slate-700 whitespace-pre-wrap break-words bg-white rounded-lg border border-slate-200 p-4 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                    {renderRedactedSource(selectedDocument.rawText)}
                   </div>
                 </div>
 
-                {/* HITL Verification */}
-                <div className="bg-white border border-slate-200 rounded-lg p-4 mt-4">
-                  <div className="flex items-start gap-3">
-                    <Checkbox
-                      id="verify"
-                      checked={verifiedCheckbox}
-                      onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
-                      className="mt-1"
-                    />
-                    <div className="flex-1">
-                      <Label htmlFor="verify" className="text-sm font-semibold text-slate-900 cursor-pointer">
-                        I verify these AI-extracted clinical details
-                      </Label>
-                      <p className="text-xs text-slate-600 mt-1">
-                        Human verification required. The AI suggests, you decide.
-                      </p>
+                <div className="bg-slate-50 rounded-xl border p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI Extraction</p>
+                    <Badge className="bg-green-100 text-green-800">{selectedDocument.confidence ?? 0}% confidence</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg bg-white border p-3">
+                      <p className="text-xs font-semibold text-slate-500">Diagnosis</p>
+                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument.diagnosis}</p>
+                    </div>
+                    <div className="rounded-lg bg-white border p-3">
+                      <p className="text-xs font-semibold text-slate-500">Specialist</p>
+                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument.specialist}</p>
                     </div>
                   </div>
+                  <div className="rounded-lg bg-white border p-3">
+                    <p className="text-xs font-semibold text-slate-500">Highlighted Source Terms</p>
+                    <p className="text-sm text-slate-700 mt-2 leading-6">
+                      {highlightClinicalTerms(selectedDocument.rawText)}
+                    </p>
+                  </div>
+                  <div className="bg-white border rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <Checkbox
+                        id={`verify-sheet-${selectedDocument.id}`}
+                        checked={verifiedCheckbox}
+                        onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
+                        className="mt-1"
+                      />
+                      <div className="flex-1">
+                        <Label htmlFor={`verify-sheet-${selectedDocument.id}`} className="text-sm font-semibold cursor-pointer">
+                          I verify these AI-extracted clinical details
+                        </Label>
+                        <p className="text-xs text-slate-600 mt-1">Human verification required before dispatch.</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="dispatch-channel" className="text-sm font-semibold">Dispatch Channel</Label>
+                    <Select value={dispatchChannel} onValueChange={setDispatchChannel}>
+                      <SelectTrigger id="dispatch-channel" className="w-full">
+                        <SelectValue placeholder="Select dispatch channel" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="OceanMD eReferral">OceanMD eReferral</SelectItem>
+                        <SelectItem value="Print/Send Fax">Print/Send Fax</SelectItem>
+                        <SelectItem value="Internal Outbox">Internal Outbox</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    onClick={() => handleExecuteReferral({
+                      id: selectedDocument.id,
+                      title: selectedDocument.documentType,
+                      body: selectedDocument.diagnosis ?? '',
+                      confidence: selectedDocument.confidence ?? 0,
+                      borderColor: '#0A5C79',
+                      priority: 'high',
+                      matchedText: [],
+                      requiresReview: false,
+                      patientName: selectedDocument.patientName,
+                    })}
+                    className="w-full rounded-full font-semibold py-5"
+                    style={{
+                      backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
+                      opacity: verifiedCheckbox ? 1 : 0.5,
+                      cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
+                      pointerEvents: verifiedCheckbox ? 'auto' : 'none',
+                    }}
+                  >
+                    Submit Referral
+                  </Button>
                 </div>
-
-                {/* Execute Button */}
-                <Button
-                  onClick={handleExecuteReferral}
-                  className="w-full rounded-full font-semibold py-5 mt-4"
-                  style={{
-                    backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
-                    opacity: verifiedCheckbox ? 1 : 0.5,
-                    cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
-                    pointerEvents: verifiedCheckbox ? 'auto' : 'none',
-                  }}
-                >
-                  Execute Referral
-                </Button>
               </div>
-            ) : (
-              <p className="text-sm text-slate-500">Select a document to view AI analysis</p>
-            )}
-          </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* ONBOARDING TOUR MODAL */}
+      {showTour && (
+        <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-8">
+          <Card className="max-w-lg w-full p-8 bg-white shadow-2xl">
+            <h2 className="text-xl font-bold text-[#0A5C79] mb-4">Responsible AI Tour</h2>
+            <div className="space-y-4 text-sm">
+              <p>
+                <strong>Step 1:</strong> Action Cards proactively surface tasks.
+              </p>
+              <p>
+                <strong>Step 2:</strong> De-identification pipeline strips PHI before the AI sees text.
+              </p>
+              <p>
+                <strong>Step 3:</strong> Human-in-the-Loop checkbox ensures the doctor verifies the AI's work.
+              </p>
+              <p>
+                <strong>Step 4:</strong> Every action logs to the immutable Audit Trail.
+              </p>
+            </div>
+            <Button className="w-full mt-6" onClick={() => setShowTour(false)}>
+              Got it
+            </Button>
+          </Card>
         </div>
-      </div>
+      )}
     </div>
   );
 }

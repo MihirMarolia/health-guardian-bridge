@@ -42,12 +42,15 @@ interface StoreState {
   timeline: TimelineEvent[];
   addReferral: (referralData: Omit<Referral, 'id' | 'status' | 'date'>) => void;
   updateReferralStatus: (id: string, newStatus: string) => void;
+  syncOfflineQueue: () => Promise<void>;
 }
 
 const initialPatients: Patient[] = [
   { id: 'p1', name: 'Jane Smith', dob: '1985-03-12', healthCard: '1234-567-890', familyMD: 'Dr. Emily Chen' },
   { id: 'p2', name: 'Michael Brown', dob: '1972-09-25', healthCard: '9876-543-210', familyMD: 'Dr. Emily Chen' },
   { id: 'p3', name: 'Sarah Wilson', dob: '1990-11-02', healthCard: '4567-890-123', familyMD: 'Dr. Alan Ward' },
+  { id: 'p4', name: 'David Lee', dob: '1988-07-15', healthCard: '5678-901-234', familyMD: 'Dr. Emily Chen' },
+  { id: 'p5', name: 'Emily Davis', dob: '1995-01-30', healthCard: '6789-012-345', familyMD: 'Dr. Alan Ward' },
 ];
 
 const initialReferrals: Referral[] = [
@@ -115,6 +118,21 @@ export const useStore = create<StoreState>()(
           timeline: [...state.timeline, newTimelineEvent] 
         };
       }),
+
+      // OFFLINE SYNC LOGIC
+      // Drains the localStorage offline queue and replays each action against Supabase.
+      syncOfflineQueue: async () => {
+        const queue = JSON.parse(localStorage.getItem('offline_queue') || '[]');
+        if (queue.length === 0) return;
+        for (const action of queue) {
+          if (action.type === 'addReferral') {
+            // Insert into Supabase service_requests table
+            const { supabase } = await import('./supabaseClient');
+            await supabase.from('service_requests').insert(action.payload);
+          }
+        }
+        localStorage.removeItem('offline_queue');
+      },
     }),
     { name: 'health-guardian-storage' }
   )
