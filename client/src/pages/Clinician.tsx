@@ -1,528 +1,306 @@
-import { useState, useEffect } from 'react';
-import { useStore } from '@/lib/store';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Card } from '@/components/ui/card';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { AlertCircle, Plus, Brain, Lock, Eye, CheckCircle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { AlertCircle, CheckCircle2, Shield, Eye, Lock, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { deidentifyText } from '@/lib/deidentify';
-import { logAIParse, logReferralCreation, logPatientView } from '@/lib/auditLogger';
+import { logAIParse, logReferralCreation } from '@/lib/auditLogger';
+
+interface ActionCard {
+  id: string;
+  title: string;
+  body: string;
+  confidence: number;
+  borderColor: string;
+  priority: 'high' | 'urgent' | 'medium';
+  matchedText: string[];
+  requiresReview: boolean;
+}
+
+const MOCK_ACTIONS: ActionCard[] = [
+  {
+    id: '1',
+    title: 'AI Verdict: Cardiology Referral',
+    body: 'System detected Heart Failure (EF 35%) from discharge fax. Automating pre‑fill.',
+    confidence: 95,
+    borderColor: '#0A5C79',
+    priority: 'high',
+    matchedText: ['EF 35%', 'SOB'],
+    requiresReview: false,
+  },
+  {
+    id: '2',
+    title: 'Alert: Overdue Lab Tracking',
+    body: 'HbA1c ordered 8 days ago. Pending results. Follow-up indicated.',
+    confidence: 100,
+    borderColor: '#FF0000',
+    priority: 'urgent',
+    matchedText: ['HbA1c', '8 days'],
+    requiresReview: false,
+  },
+  {
+    id: '3',
+    title: 'AI Triage: eConsult Recommendation',
+    body: 'Polypharmacy detected (6 medications). Suggesting Pharmacist eConsult.',
+    confidence: 68,
+    borderColor: '#F59E0B',
+    priority: 'medium',
+    matchedText: ['6 medications', 'polypharmacy'],
+    requiresReview: true,
+  },
+];
 
 export default function Clinician() {
-  const { patients, referrals, labs, addReferral, updateReferralStatus } = useStore();
-  const [smartConnected, setSmartConnected] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [showFaxParser, setShowFaxParser] = useState(false);
-  const [faxText, setFaxText] = useState('');
+  const [selectedAction, setSelectedAction] = useState<ActionCard | null>(null);
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
-  const [redactionCount, setRedactionCount] = useState(0);
-  const [selectedPatientForJourney, setSelectedPatientForJourney] = useState<string | null>(null);
-  
-  // Form state
-  const [selectedPatient, setSelectedPatient] = useState('');
-  const [specialist, setSpecialist] = useState('');
-  const [notes, setNotes] = useState('');
-
-  // Get labs older than 7 days
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  
-  const overdueOrderedLabs = labs.filter(lab => {
-    if (lab.status !== 'Ordered') return false;
-    const labDate = new Date(lab.date);
-    return labDate < sevenDaysAgo;
+  const [formData, setFormData] = useState({
+    specialist: '',
+    notes: '',
   });
 
-  // Handle AI Fax Parser with De-identification
-  const handleParseFax = () => {
-    if (!faxText) {
-      toast.error('Please paste clinical text first');
-      return;
-    }
-
-    // De-identify the text before AI processing
-    const { deidentifiedText, redactionCount: count } = deidentifyText(faxText);
-    setRedactionCount(count);
-
-    const textUpper = deidentifiedText.toUpperCase();
-    let parsedSpecialist = '';
-    let parsedNotes = '';
-
-    if (textUpper.includes('CARDIOLOGY') || textUpper.includes('HEART') || textUpper.includes('EF')) {
-      parsedSpecialist = 'Cardiology';
-      parsedNotes = 'Heart Failure (EF 35%)';
-    } else if (textUpper.includes('DERMATOLOGY') || textUpper.includes('SKIN')) {
-      parsedSpecialist = 'Dermatology';
-      parsedNotes = 'Skin condition';
-    } else if (textUpper.includes('ORTHOPEDIC') || textUpper.includes('BONE') || textUpper.includes('JOINT')) {
-      parsedSpecialist = 'Orthopedics';
-      parsedNotes = 'Musculoskeletal issue';
-    }
-
-    if (parsedSpecialist) {
-      setSpecialist(parsedSpecialist);
-      setNotes(parsedNotes);
-      toast.success(`✓ Parsed: ${parsedSpecialist} | ${count} PII elements redacted`);
-      
-      // Log AI parsing action
-      logAIParse(1, 'temp-id', 0.92, count).catch(console.error);
-    } else {
-      toast.error('Could not identify specialist from text');
-    }
-  };
-
-  // Handle submit referral with HITL verification
-  const handleSubmitReferral = async () => {
-    if (!selectedPatient || !specialist || !notes) {
-      toast.error('Please fill in all fields');
-      return;
-    }
-
-    if (!verifiedCheckbox) {
-      toast.error('You must verify the AI-extracted details before submitting');
-      return;
-    }
-
-    addReferral({
-      patientId: selectedPatient,
-      specialist,
-      notes,
+  const handleActionClick = (action: ActionCard) => {
+    setSelectedAction(action);
+    setFormData({
+      specialist: action.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
+      notes: action.body,
     });
-
-    // Log referral creation
-    await logReferralCreation(1, 'ref-' + Date.now(), selectedPatient, specialist);
-
-    // Log FHIR ServiceRequest to console
-    const fhirServiceRequest = {
-      resourceType: 'ServiceRequest',
-      status: 'draft',
-      intent: 'order',
-      code: {
-        coding: [
-          {
-            system: 'http://snomed.info/sct',
-            code: '11429006',
-            display: specialist,
-          },
-        ],
-      },
-      subject: {
-        reference: `Patient/${selectedPatient}`,
-      },
-      notes: [{ text: notes }],
-      authoredOn: new Date().toISOString(),
-    };
-
-    console.log('FHIR ServiceRequest:', fhirServiceRequest);
-    toast.success('✓ Referral verified and submitted');
-
-    // Reset form
-    setSelectedPatient('');
-    setSpecialist('');
-    setNotes('');
-    setFaxText('');
-    setShowFaxParser(false);
     setVerifiedCheckbox(false);
-    setRedactionCount(0);
-    setIsModalOpen(false);
+    setIsSheetOpen(true);
   };
 
-  // Handle status update
-  const handleStatusChange = (referralId: string, newStatus: string) => {
-    updateReferralStatus(referralId, newStatus);
-    toast.success(`Referral status updated to ${newStatus}`);
+  const handleExecuteReferral = async () => {
+    if (!verifiedCheckbox) {
+      toast.error('Please verify the AI-extracted details');
+      return;
+    }
+
+    const auditId = `REF-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
+    
+    await logReferralCreation(1, auditId, 'patient-1', formData.specialist);
+    
+    toast.success(`✅ eReferral Generated. Audit Log #${auditId} recorded to PostgreSQL.`);
+    
+    setIsSheetOpen(false);
+    setVerifiedCheckbox(false);
+    setSelectedAction(null);
   };
 
-  // Handle patient row click to show journey
-  const handlePatientClick = async (patientId: string) => {
-    setSelectedPatientForJourney(patientId);
-    await logPatientView(1, patientId, 'Viewing patient care history');
+  const getConfidenceBadgeColor = (confidence: number) => {
+    if (confidence >= 90) return 'bg-green-100 text-green-800';
+    if (confidence >= 70) return 'bg-blue-100 text-blue-800';
+    return 'bg-amber-100 text-amber-800';
   };
-
-  const selectedPatientData = patients.find(p => p.id === selectedPatientForJourney);
-  const patientReferrals = selectedPatientForJourney 
-    ? referrals.filter(r => r.patientId === selectedPatientForJourney)
-    : [];
-  const patientLabs = selectedPatientForJourney
-    ? labs.filter(l => l.patientId === selectedPatientForJourney)
-    : [];
-
-  // Combine and sort timeline events
-  const timelineEvents = [
-    ...patientReferrals.map(r => ({
-      id: r.id,
-      type: 'referral' as const,
-      date: new Date(r.date),
-      title: `Referral to ${r.specialist}`,
-      description: r.notes,
-      status: r.status,
-    })),
-    ...patientLabs.map(l => ({
-      id: l.id,
-      type: 'lab' as const,
-      date: new Date(l.date),
-      title: `${l.testType} ${l.status === 'Ordered' ? '(Ordered)' : '(Resulted)'}`,
-                    description: (l as any).result || 'Pending result',
-      status: l.status,
-    })),
-  ].sort((a, b) => b.date.getTime() - a.date.getTime());
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-4xl font-bold text-slate-900">Health Guardian Bridge</h1>
-              <p className="text-slate-600 mt-2">Clinical Inbox Orchestrator</p>
-            </div>
-            <div className="flex items-center gap-3 bg-white px-4 py-3 rounded-lg border border-slate-200">
-              <span className="text-sm font-medium text-slate-700">Launch as SMART on FHIR App</span>
-              <Switch checked={smartConnected} onCheckedChange={setSmartConnected} />
-            </div>
+    <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
+        <h1 className="text-2xl font-bold" style={{ color: '#0A5C79' }}>
+          Health Guardian Bridge
+        </h1>
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
+          <Shield className="w-4 h-4" />
+          🛡️ Audit Session Active
+        </div>
+      </div>
+
+      {/* Stats Bar */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex gap-6 flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-blue-100 rounded-lg">
+            <Zap className="w-5 h-5 text-blue-600" />
           </div>
-
-          {/* SMART Connection Banner */}
-          {smartConnected && (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-start gap-3">
-              <div className="w-2 h-2 bg-green-500 rounded-full mt-1.5" />
-              <div>
-                <p className="font-semibold text-green-900">Connected to AWS HealthLake (FHIR R4) - Canada Central Region</p>
-                <p className="text-sm text-green-700 mt-1">Real-time interoperability enabled</p>
-              </div>
-            </div>
-          )}
-
-          {/* Privacy & Compliance Footer */}
-          <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-2">
-            <Lock className="w-4 h-4 text-blue-600" />
-            <p className="text-xs text-blue-700">
-              <strong>Privacy Compliance:</strong> All PHI is encrypted at rest and in transit. All actions logged per PIPEDA/PHIPA standards.
-            </p>
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Referrals Orchestrated</p>
+            <p className="text-lg font-bold text-slate-900">12</p>
           </div>
         </div>
 
-        {/* CDS Alert Card */}
-        {overdueOrderedLabs.length > 0 && (
-          <Card className="mb-8 border-red-500 bg-red-50">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="w-5 h-5 text-red-600" />
-                <CardTitle className="text-red-900">Clinical Decision Support Alert</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <p className="text-red-800 font-medium mb-3">
-                {overdueOrderedLabs.length} lab result(s) pending for over 7 days:
-              </p>
-              <ul className="space-y-2">
-                {overdueOrderedLabs.map(lab => {
-                  const patient = patients.find(p => p.id === lab.patientId);
-                  return (
-                    <li key={lab.id} className="text-sm text-red-700">
-                      • <strong>{patient?.name}</strong> - {lab.testType} (ordered {lab.date})
-                    </li>
-                  );
-                })}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-green-100 rounded-lg">
+            <CheckCircle2 className="w-5 h-5 text-green-600" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Labs Monitored</p>
+            <p className="text-lg font-bold text-slate-900">8</p>
+          </div>
+        </div>
 
-        {/* Referral Table */}
-        <Card className="mb-8">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle>Active Referrals</CardTitle>
-                <CardDescription>Click patient name to view care journey</CardDescription>
-              </div>
-              <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-                <DialogTrigger asChild>
-                  <Button className="gap-2">
-                    <Plus className="w-4 h-4" />
-                    New Referral
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-2xl">
-                  <DialogHeader>
-                    <DialogTitle>Create New Referral</DialogTitle>
-                    <DialogDescription>Send a referral to a specialist</DialogDescription>
-                  </DialogHeader>
-
-                  <div className="space-y-4 py-4">
-                    {/* Patient Selection */}
-                    <div className="space-y-2">
-                      <Label htmlFor="patient">Patient</Label>
-                      <Select value={selectedPatient} onValueChange={setSelectedPatient}>
-                        <SelectTrigger id="patient">
-                          <SelectValue placeholder="Select a patient" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {patients.map(patient => (
-                            <SelectItem key={patient.id} value={patient.id}>
-                              {patient.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {/* Specialist Input */}
-                    <div className="space-y-2">
-                      <Label htmlFor="specialist">Specialist</Label>
-                      <Input
-                        id="specialist"
-                        placeholder="e.g., Cardiology"
-                        value={specialist}
-                        onChange={(e) => setSpecialist(e.target.value)}
-                      />
-                    </div>
-
-                    {/* Notes */}
-                    <div className="space-y-2">
-                      <Label htmlFor="notes">Clinical Notes</Label>
-                      <Textarea
-                        id="notes"
-                        placeholder="Enter clinical notes..."
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        rows={3}
-                      />
-                    </div>
-
-                    {/* AI Fax Parser */}
-                    <div className="border-t pt-4">
-                      <Button
-                        variant="outline"
-                        className="w-full gap-2 mb-3"
-                        onClick={() => setShowFaxParser(!showFaxParser)}
-                      >
-                        <Brain className="w-4 h-4" />
-                        🧠 AI Parse Fax (OpenMed)
-                      </Button>
-
-                      {showFaxParser && (
-                        <div className="space-y-3 bg-slate-50 p-3 rounded-lg">
-                          <Textarea
-                            placeholder="Paste messy clinical text here..."
-                            value={faxText}
-                            onChange={(e) => setFaxText(e.target.value)}
-                            rows={4}
-                          />
-                          <Button onClick={handleParseFax} variant="secondary" className="w-full">
-                            Parse Text
-                          </Button>
-                          {redactionCount > 0 && (
-                            <div className="bg-amber-50 border border-amber-200 rounded p-2 flex items-center gap-2">
-                              <Lock className="w-4 h-4 text-amber-600" />
-                              <span className="text-xs text-amber-700">
-                                <strong>Data Minimization:</strong> {redactionCount} PII elements redacted before processing
-                              </span>
-                            </div>
-                          )}
-                          <p className="text-xs text-slate-500">
-                            Synthetic AI processing - Powered by OpenMed Local NLP
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* HITL Verification Checkbox */}
-                    <div className="border-t pt-4 bg-blue-50 p-3 rounded-lg">
-                      <div className="flex items-start gap-3">
-                        <Checkbox
-                          id="verify"
-                          checked={verifiedCheckbox}
-                          onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
-                          className="mt-1"
-                        />
-                        <div className="flex-1">
-                          <Label htmlFor="verify" className="font-medium text-slate-900 cursor-pointer">
-                            I verify these AI-extracted clinical details
-                          </Label>
-                          <p className="text-xs text-slate-600 mt-1">
-                            Human verification required. The AI suggests, you decide.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Submit Button - Hard-blocked until verified */}
-                    <Button 
-                      onClick={handleSubmitReferral} 
-                      className="w-full"
-                      disabled={!verifiedCheckbox}
-                      variant={verifiedCheckbox ? 'default' : 'secondary'}
-                    >
-                      {verifiedCheckbox ? (
-                        <>
-                          <CheckCircle className="w-4 h-4 mr-2" />
-                          Submit Referral
-                        </>
-                      ) : (
-                        <>
-                          <Lock className="w-4 h-4 mr-2" />
-                          Verification Required
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Patient</TableHead>
-                  <TableHead>Specialist</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {referrals.map(referral => {
-                  const patient = patients.find(p => p.id === referral.patientId);
-                  return (
-                    <TableRow key={referral.id}>
-                      <TableCell 
-                        className="font-medium cursor-pointer hover:text-blue-600 hover:underline"
-                        onClick={() => handlePatientClick(referral.patientId)}
-                      >
-                        {patient?.name}
-                      </TableCell>
-                      <TableCell>{referral.specialist}</TableCell>
-                      <TableCell>{referral.date}</TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={referral.status === 'Pending' ? 'secondary' : 'default'}
-                          className={
-                            referral.status === 'Pending'
-                              ? 'bg-yellow-100 text-yellow-800'
-                              : referral.status === 'Accepted'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-slate-100 text-slate-800'
-                          }
-                        >
-                          {referral.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={referral.status}
-                          onValueChange={(value) => handleStatusChange(referral.id, value)}
-                        >
-                          <SelectTrigger className="w-32">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Pending">Pending</SelectItem>
-                            <SelectItem value="Accepted">Accepted</SelectItem>
-                            <SelectItem value="Completed">Completed</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-amber-100 rounded-lg">
+            <AlertCircle className="w-5 h-5 text-amber-600" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium">⏱️ Clinical Time Saved</p>
+            <p className="text-lg font-bold" style={{ color: '#F59E0B' }}>3.2 Hours</p>
+          </div>
+        </div>
       </div>
 
-      {/* Patient Care Journey Sheet */}
-      <Sheet open={!!selectedPatientForJourney} onOpenChange={(open) => {
-        if (!open) setSelectedPatientForJourney(null);
-      }}>
+      {/* Action Triage Queue - Scrollable */}
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="space-y-4 max-w-4xl">
+          {MOCK_ACTIONS.map((action) => (
+            <Card
+              key={action.id}
+              className="p-5 rounded-xl border-l-4 hover:shadow-md transition-all cursor-pointer bg-white"
+              style={{ borderLeftColor: action.borderColor }}
+              onClick={() => handleActionClick(action)}
+            >
+              <div className="flex items-start justify-between mb-3">
+                <h3 className="font-semibold text-slate-900 text-base">{action.title}</h3>
+                <Badge
+                  className={`${
+                    action.priority === 'urgent'
+                      ? 'bg-red-100 text-red-800'
+                      : action.priority === 'high'
+                      ? 'bg-blue-100 text-blue-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {action.priority.charAt(0).toUpperCase() + action.priority.slice(1)}
+                </Badge>
+              </div>
+
+              <p className="text-slate-600 text-sm mb-4">{action.body}</p>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <Badge variant="outline" className="bg-slate-50">
+                  🛡️ PII Protected
+                </Badge>
+                <Badge variant="outline" className={getConfidenceBadgeColor(action.confidence)}>
+                  ✅ Confidence {action.confidence}%
+                </Badge>
+                {action.requiresReview && (
+                  <Badge variant="outline" className="bg-amber-50">
+                    ⚖️ Human Review Required
+                  </Badge>
+                )}
+              </div>
+
+              <div className="mt-3 text-xs text-slate-500">
+                Matched text: {action.matchedText.map((t) => `"${t}"`).join(', ')}
+              </div>
+
+              <Button
+                className="mt-4 w-full rounded-lg border-2"
+                variant="outline"
+                style={{ borderColor: action.borderColor, color: action.borderColor }}
+              >
+                Review & Execute
+              </Button>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Calibrated Trust Slide-out */}
+      <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
         <SheetContent side="right" className="w-full sm:w-[600px] overflow-y-auto">
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
-              <Eye className="w-5 h-5 text-blue-600" />
-              Patient Care Journey (Audit & Continuity View)
+              <Eye className="w-5 h-5" style={{ color: '#0A5C79' }} />
+              Calibrated Trust: AI Transparency & Reasoning
             </SheetTitle>
             <SheetDescription>
-              {selectedPatientData?.name} - Complete care history
+              Review AI-extracted clinical details before execution
             </SheetDescription>
           </SheetHeader>
 
           <div className="mt-6 space-y-6">
-            {/* Patient Info Card */}
-            {selectedPatientData && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg">{selectedPatientData.name}</CardTitle>
-                  <CardDescription>DOB: {selectedPatientData.dob}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-sm text-slate-600">
-                    Primary Physician: {(selectedPatientData as any).primaryPhysician}
+            {/* Glass Box - AI Transparency */}
+            <div className="bg-gradient-to-br from-blue-50 to-slate-50 border border-blue-200 rounded-xl p-5">
+              <div className="flex items-start gap-3">
+                <Lock className="w-5 h-5 text-blue-600 mt-1 flex-shrink-0" />
+                <div>
+                  <h4 className="font-semibold text-slate-900 mb-2">AI Transparency & Reasoning</h4>
+                  <p className="text-sm text-slate-600 mb-4">
+                    The AI examined the de‑identified clinical text. No patient PII was exposed to the model.
+                  </p>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Badge variant="outline" className="bg-slate-100">
+                      [REDACTED]
+                    </Badge>
+                    <span className="text-xs text-slate-500">PHI Redacted Before Processing</span>
                   </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Timeline */}
-            <div>
-              <h3 className="font-semibold text-slate-900 mb-4">Care Timeline</h3>
-              <div className="space-y-4">
-                {timelineEvents.length === 0 ? (
-                  <p className="text-sm text-slate-500">No events recorded</p>
-                ) : (
-                  timelineEvents.map((event, idx) => (
-                    <div key={event.id} className="flex gap-4">
-                      {/* Timeline dot */}
-                      <div className="flex flex-col items-center">
-                        <div
-                          className={`w-3 h-3 rounded-full ${
-                            event.type === 'referral'
-                              ? 'bg-blue-600'
-                              : 'bg-green-600'
-                          }`}
-                        />
-                        {idx < timelineEvents.length - 1 && (
-                          <div className="w-0.5 h-12 bg-slate-300 mt-2" />
-                        )}
-                      </div>
-
-                      {/* Event content */}
-                      <div className="pb-4 flex-1">
-                        <div className="font-medium text-slate-900">{event.title}</div>
-                        <div className="text-sm text-slate-600 mt-1">{event.description}</div>
-                        <div className="text-xs text-slate-500 mt-2">
-                          {event.date.toLocaleDateString()} {event.date.toLocaleTimeString()}
-                        </div>
-                        {event.status && (
-                          <Badge className="mt-2" variant="outline">
-                            {event.status}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
+                  <div className="bg-white rounded-lg p-3 border border-slate-200">
+                    <p className="text-xs font-mono text-slate-600">
+                      <strong>Source Text Highlights:</strong>
+                      <br />
+                      {selectedAction?.matchedText.map((t) => `"${t}"`).join(', ')}
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Audit Trail Note */}
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-              <p className="text-xs text-amber-700">
-                <strong>Audit Trail:</strong> This view is logged for compliance. All clinician actions are recorded in the audit trail per PIPEDA/PHIPA regulations.
-              </p>
+            {/* Form */}
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="specialist" className="font-semibold text-slate-900">
+                  Specialist
+                </Label>
+                <Input
+                  id="specialist"
+                  value={formData.specialist}
+                  onChange={(e) => setFormData({ ...formData, specialist: e.target.value })}
+                  className="mt-2"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="notes" className="font-semibold text-slate-900">
+                  Clinical Notes
+                </Label>
+                <Textarea
+                  id="notes"
+                  value={formData.notes}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  className="mt-2"
+                  rows={4}
+                />
+              </div>
             </div>
+
+            {/* HITL Verification */}
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  id="verify"
+                  checked={verifiedCheckbox}
+                  onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
+                  className="mt-1"
+                />
+                <div className="flex-1">
+                  <Label htmlFor="verify" className="font-semibold text-slate-900 cursor-pointer">
+                    I verify these AI-extracted clinical details
+                  </Label>
+                  <p className="text-xs text-slate-600 mt-1">
+                    Human verification required. The AI suggests, you decide.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Execute Button */}
+            <Button
+              onClick={handleExecuteReferral}
+              className="w-full rounded-lg font-semibold py-6"
+              style={{
+                backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
+                opacity: verifiedCheckbox ? 1 : 0.5,
+                pointerEvents: verifiedCheckbox ? 'auto' : 'none',
+              }}
+            >
+              Execute Referral
+            </Button>
           </div>
         </SheetContent>
       </Sheet>
