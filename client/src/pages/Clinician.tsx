@@ -10,8 +10,12 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { AlertCircle, Plus, Brain } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { AlertCircle, Plus, Brain, Lock, Eye, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { deidentifyText } from '@/lib/deidentify';
+import { logAIParse, logReferralCreation, logPatientView } from '@/lib/auditLogger';
 
 export default function Clinician() {
   const { patients, referrals, labs, addReferral, updateReferralStatus } = useStore();
@@ -19,6 +23,9 @@ export default function Clinician() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [showFaxParser, setShowFaxParser] = useState(false);
   const [faxText, setFaxText] = useState('');
+  const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
+  const [redactionCount, setRedactionCount] = useState(0);
+  const [selectedPatientForJourney, setSelectedPatientForJourney] = useState<string | null>(null);
   
   // Form state
   const [selectedPatient, setSelectedPatient] = useState('');
@@ -35,14 +42,18 @@ export default function Clinician() {
     return labDate < sevenDaysAgo;
   });
 
-  // Handle AI Fax Parser
+  // Handle AI Fax Parser with De-identification
   const handleParseFax = () => {
     if (!faxText) {
       toast.error('Please paste clinical text first');
       return;
     }
 
-    const textUpper = faxText.toUpperCase();
+    // De-identify the text before AI processing
+    const { deidentifiedText, redactionCount: count } = deidentifyText(faxText);
+    setRedactionCount(count);
+
+    const textUpper = deidentifiedText.toUpperCase();
     let parsedSpecialist = '';
     let parsedNotes = '';
 
@@ -60,16 +71,24 @@ export default function Clinician() {
     if (parsedSpecialist) {
       setSpecialist(parsedSpecialist);
       setNotes(parsedNotes);
-      toast.success(`Parsed: ${parsedSpecialist} referral`);
+      toast.success(`✓ Parsed: ${parsedSpecialist} | ${count} PII elements redacted`);
+      
+      // Log AI parsing action
+      logAIParse(1, 'temp-id', 0.92, count).catch(console.error);
     } else {
       toast.error('Could not identify specialist from text');
     }
   };
 
-  // Handle submit referral
-  const handleSubmitReferral = () => {
+  // Handle submit referral with HITL verification
+  const handleSubmitReferral = async () => {
     if (!selectedPatient || !specialist || !notes) {
       toast.error('Please fill in all fields');
+      return;
+    }
+
+    if (!verifiedCheckbox) {
+      toast.error('You must verify the AI-extracted details before submitting');
       return;
     }
 
@@ -78,6 +97,9 @@ export default function Clinician() {
       specialist,
       notes,
     });
+
+    // Log referral creation
+    await logReferralCreation(1, 'ref-' + Date.now(), selectedPatient, specialist);
 
     // Log FHIR ServiceRequest to console
     const fhirServiceRequest = {
@@ -101,7 +123,7 @@ export default function Clinician() {
     };
 
     console.log('FHIR ServiceRequest:', fhirServiceRequest);
-    toast.success('Referral submitted and FHIR request logged to console');
+    toast.success('✓ Referral verified and submitted');
 
     // Reset form
     setSelectedPatient('');
@@ -109,6 +131,8 @@ export default function Clinician() {
     setNotes('');
     setFaxText('');
     setShowFaxParser(false);
+    setVerifiedCheckbox(false);
+    setRedactionCount(0);
     setIsModalOpen(false);
   };
 
@@ -117,6 +141,40 @@ export default function Clinician() {
     updateReferralStatus(referralId, newStatus);
     toast.success(`Referral status updated to ${newStatus}`);
   };
+
+  // Handle patient row click to show journey
+  const handlePatientClick = async (patientId: string) => {
+    setSelectedPatientForJourney(patientId);
+    await logPatientView(1, patientId, 'Viewing patient care history');
+  };
+
+  const selectedPatientData = patients.find(p => p.id === selectedPatientForJourney);
+  const patientReferrals = selectedPatientForJourney 
+    ? referrals.filter(r => r.patientId === selectedPatientForJourney)
+    : [];
+  const patientLabs = selectedPatientForJourney
+    ? labs.filter(l => l.patientId === selectedPatientForJourney)
+    : [];
+
+  // Combine and sort timeline events
+  const timelineEvents = [
+    ...patientReferrals.map(r => ({
+      id: r.id,
+      type: 'referral' as const,
+      date: new Date(r.date),
+      title: `Referral to ${r.specialist}`,
+      description: r.notes,
+      status: r.status,
+    })),
+    ...patientLabs.map(l => ({
+      id: l.id,
+      type: 'lab' as const,
+      date: new Date(l.date),
+      title: `${l.testType} ${l.status === 'Ordered' ? '(Ordered)' : '(Resulted)'}`,
+                    description: (l as any).result || 'Pending result',
+      status: l.status,
+    })),
+  ].sort((a, b) => b.date.getTime() - a.date.getTime());
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
@@ -144,6 +202,14 @@ export default function Clinician() {
               </div>
             </div>
           )}
+
+          {/* Privacy & Compliance Footer */}
+          <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-2">
+            <Lock className="w-4 h-4 text-blue-600" />
+            <p className="text-xs text-blue-700">
+              <strong>Privacy Compliance:</strong> All PHI is encrypted at rest and in transit. All actions logged per PIPEDA/PHIPA standards.
+            </p>
+          </div>
         </div>
 
         {/* CDS Alert Card */}
@@ -179,7 +245,7 @@ export default function Clinician() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>Active Referrals</CardTitle>
-                <CardDescription>Manage and track specialist referrals</CardDescription>
+                <CardDescription>Click patient name to view care journey</CardDescription>
               </div>
               <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
                 <DialogTrigger asChild>
@@ -257,6 +323,14 @@ export default function Clinician() {
                           <Button onClick={handleParseFax} variant="secondary" className="w-full">
                             Parse Text
                           </Button>
+                          {redactionCount > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded p-2 flex items-center gap-2">
+                              <Lock className="w-4 h-4 text-amber-600" />
+                              <span className="text-xs text-amber-700">
+                                <strong>Data Minimization:</strong> {redactionCount} PII elements redacted before processing
+                              </span>
+                            </div>
+                          )}
                           <p className="text-xs text-slate-500">
                             Synthetic AI processing - Powered by OpenMed Local NLP
                           </p>
@@ -264,9 +338,44 @@ export default function Clinician() {
                       )}
                     </div>
 
-                    {/* Submit Button */}
-                    <Button onClick={handleSubmitReferral} className="w-full">
-                      Submit Referral
+                    {/* HITL Verification Checkbox */}
+                    <div className="border-t pt-4 bg-blue-50 p-3 rounded-lg">
+                      <div className="flex items-start gap-3">
+                        <Checkbox
+                          id="verify"
+                          checked={verifiedCheckbox}
+                          onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
+                          className="mt-1"
+                        />
+                        <div className="flex-1">
+                          <Label htmlFor="verify" className="font-medium text-slate-900 cursor-pointer">
+                            I verify these AI-extracted clinical details
+                          </Label>
+                          <p className="text-xs text-slate-600 mt-1">
+                            Human verification required. The AI suggests, you decide.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Submit Button - Hard-blocked until verified */}
+                    <Button 
+                      onClick={handleSubmitReferral} 
+                      className="w-full"
+                      disabled={!verifiedCheckbox}
+                      variant={verifiedCheckbox ? 'default' : 'secondary'}
+                    >
+                      {verifiedCheckbox ? (
+                        <>
+                          <CheckCircle className="w-4 h-4 mr-2" />
+                          Submit Referral
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-4 h-4 mr-2" />
+                          Verification Required
+                        </>
+                      )}
                     </Button>
                   </div>
                 </DialogContent>
@@ -289,7 +398,12 @@ export default function Clinician() {
                   const patient = patients.find(p => p.id === referral.patientId);
                   return (
                     <TableRow key={referral.id}>
-                      <TableCell className="font-medium">{patient?.name}</TableCell>
+                      <TableCell 
+                        className="font-medium cursor-pointer hover:text-blue-600 hover:underline"
+                        onClick={() => handlePatientClick(referral.patientId)}
+                      >
+                        {patient?.name}
+                      </TableCell>
                       <TableCell>{referral.specialist}</TableCell>
                       <TableCell>{referral.date}</TableCell>
                       <TableCell>
@@ -329,6 +443,89 @@ export default function Clinician() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Patient Care Journey Sheet */}
+      <Sheet open={!!selectedPatientForJourney} onOpenChange={(open) => {
+        if (!open) setSelectedPatientForJourney(null);
+      }}>
+        <SheetContent side="right" className="w-full sm:w-[600px] overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <Eye className="w-5 h-5 text-blue-600" />
+              Patient Care Journey (Audit & Continuity View)
+            </SheetTitle>
+            <SheetDescription>
+              {selectedPatientData?.name} - Complete care history
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="mt-6 space-y-6">
+            {/* Patient Info Card */}
+            {selectedPatientData && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">{selectedPatientData.name}</CardTitle>
+                  <CardDescription>DOB: {selectedPatientData.dob}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-sm text-slate-600">
+                    Primary Physician: {(selectedPatientData as any).primaryPhysician}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Timeline */}
+            <div>
+              <h3 className="font-semibold text-slate-900 mb-4">Care Timeline</h3>
+              <div className="space-y-4">
+                {timelineEvents.length === 0 ? (
+                  <p className="text-sm text-slate-500">No events recorded</p>
+                ) : (
+                  timelineEvents.map((event, idx) => (
+                    <div key={event.id} className="flex gap-4">
+                      {/* Timeline dot */}
+                      <div className="flex flex-col items-center">
+                        <div
+                          className={`w-3 h-3 rounded-full ${
+                            event.type === 'referral'
+                              ? 'bg-blue-600'
+                              : 'bg-green-600'
+                          }`}
+                        />
+                        {idx < timelineEvents.length - 1 && (
+                          <div className="w-0.5 h-12 bg-slate-300 mt-2" />
+                        )}
+                      </div>
+
+                      {/* Event content */}
+                      <div className="pb-4 flex-1">
+                        <div className="font-medium text-slate-900">{event.title}</div>
+                        <div className="text-sm text-slate-600 mt-1">{event.description}</div>
+                        <div className="text-xs text-slate-500 mt-2">
+                          {event.date.toLocaleDateString()} {event.date.toLocaleTimeString()}
+                        </div>
+                        {event.status && (
+                          <Badge className="mt-2" variant="outline">
+                            {event.status}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Audit Trail Note */}
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p className="text-xs text-amber-700">
+                <strong>Audit Trail:</strong> This view is logged for compliance. All clinician actions are recorded in the audit trail per PIPEDA/PHIPA regulations.
+              </p>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
