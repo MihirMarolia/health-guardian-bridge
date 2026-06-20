@@ -1,82 +1,74 @@
-# Health Guardian
+Health Guardian
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)
-![React](https://img.shields.io/badge/React-19-61DAFB)
-![Vite](https://img.shields.io/badge/Vite-7-646CFF)
-![Supabase](https://img.shields.io/badge/Supabase-Enabled-3ECF8E)
-![License](https://img.shields.io/badge/License-MIT-green)
+Health Guardian is an enterprise-grade, clinician-first clinical triage platform designed to transform fragmented, unstructured referral and document intake into a secure, auditable, and highly efficient workflow.
+The Operational Challenge
 
-Health Guardian is a clinician-first platform that turns fragmented referral intake into a secure, understandable, and actionable workflow.
+Primary care teams face significant administrative burdens from manual referral triage, unstructured faxed documentation, and disconnected care handoffs. These operational inefficiencies contribute to prolonged wait times and increased risk of critical details being missed.
 
-## Why this matters
-Healthcare teams still lose time to manual referral triage, messy fax intake, and disconnected handoffs. Health Guardian reduces that burden by combining AI-assisted extraction, human verification, privacy safeguards, and audit visibility in one workflow.
+Health Guardian addresses this challenge by centralizing document triage while explicitly maintaining human-in-the-loop oversight, field-level data privacy safeguards, and immutable audit logging.
+Platform Architecture & Design Principles
+1. Calibrated Trust & Transparency
 
-## Submission-ready elevator pitch
-Health Guardian helps clinicians process incoming referrals faster while keeping patient privacy protected and human judgment at the center of every decision.
+The system follows the principles of explainable AI. When unstructured clinical documents are ingested, the system surfaces exact source-text highlights alongside derived extractions (e.g., condition, recommended specialist) and confidence scoring. AI augments human judgment; it does not bypass it.
+2. Human-in-the-Loop (HITL) Enforcement
 
-## Key features
-- Clinician dashboard for reviewing referrals and patient context
-- AI-assisted extraction of key clinical details from unstructured documents
-- Visual redaction of sensitive information before AI processing
-- Human-in-the-loop confirmation to keep clinicians in control
-- Audit logging to support accountability and trust
-- Secure, clinician-focused workflow design that avoids unnecessary patient-facing exposure
+To ensure safety, accountability, and appropriate oversight, the application implements a mandatory gatekeeper verification step. Clinicians must explicitly review and confirm extractions before an action (such as generating a FHIR ServiceRequest) can be executed.
+3. Privacy-by-Design
 
-## How the workflow works
-1. A referral or clinical document is reviewed in the clinician view.
-2. Key medical details are extracted and surfaced for validation.
-3. Sensitive fields are redacted to reduce privacy risk.
-4. The clinician confirms the output before any final action is taken.
-5. Every step is logged for traceability and compliance visibility.
+The architecture minimizes risk through targeted field redaction. Sensitive Protected Health Information (PHI) is isolated or visually managed before any automated processing occurs, upholding strict governance and operational safety.
+4. Integration over Fragmentation
 
-## Demo highlights
-- Faster review of high-volume referral intake
-- Clear visibility into what the AI extracted
-- Transparent privacy controls that users can trust
-- A practical workflow designed for real clinical operations
+Built in direct response to clinician feedback warning against siloed applications, the tool fits directly into existing administrative and coordination workflows with low cognitive overhead.
+Technical Stack
 
-## Tech stack
-- Frontend: React, TypeScript, Vite
-- UI: Tailwind-inspired component system with reusable design primitives
-- Backend/data: Supabase and server-side workflow logic
-- Compliance focus: audit logging, redaction, and human verification flow
+    Frontend: React, TypeScript, Vite
 
-## Run locally
-```bash
-pnpm install
+    Styling: Tailwind CSS, Shadcn/ui component primitives
+
+    Database / State: Supabase (PostgreSQL)
+
+    Security & Logging: Immutable event tracking, structured payloads, and field-level redaction pipelines
+
+Getting Started
+Prerequisites
+
+Ensure you have pnpm installed globally.
+Local Installation
+
+    Clone the repository:
+
+Bash
+
+git clone https://github.com/your-org/health-guardian.git
+cd health-guardian
+
+    Install dependencies:
+
+Bash
+
+pnpm install --legacy-peer-deps
+
+    Configure environment variables (.env.local):
+
+Code snippet
+
+VITE_SUPABASE_URL=your_supabase_project_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+
+    Run the local development server:
+
+Bash
+
 pnpm dev
-```
 
-Environment variables needed:
-```bash
-VITE_SUPABASE_URL=
-VITE_SUPABASE_ANON_KEY=
-```
+Repository Documentation
 
-## FAQ
-### What problem does this solve?
-It reduces time spent manually sorting referrals and improves trust in AI-assisted clinical workflows.
+    Demo Script & Scenarios: docs/demo-script.md
 
-### Why is this clinician-first?
-The workflow is designed to support clinicians directly, not expose patient data unnecessarily.
+    Deployment & Hosting Guide: DEPLOYMENT.md
 
-### How is privacy protected?
-Sensitive data is redacted before AI processing, and the platform emphasizes review and accountability.
+    Contribution Guidelines: CONTRIBUTING.md
 
-### Is AI replacing the clinician?
-No. AI supports the clinician, but the human remains responsible for the final decision.
+License
 
-## Roadmap
-- Improve triage intelligence and matching accuracy
-- Add stronger reporting and operational dashboards
-- Expand integrations with healthcare systems and workflows
-- Improve onboarding, accessibility, and demo readiness
-
-## Repository extras
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [DEPLOYMENT.md](DEPLOYMENT.md)
-- [docs/demo-script.md](docs/demo-script.md)
-
-## Submission summary
-Health Guardian is a privacy-conscious, clinician-centered referral workflow platform that helps teams process medical information faster while keeping humans in control. It combines explainable AI, redaction, audit trails, and a clear review flow to address a real healthcare operational challenge.
-
+This project is licensed under the MIT License - see the LICENSE file for details.
