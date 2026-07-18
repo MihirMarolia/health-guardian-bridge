@@ -1,34 +1,25 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
+  Activity,
   AlertCircle,
   CheckCircle2,
-  Shield,
-  Lock,
-  Zap,
-  Wifi,
-  WifiOff,
+  Clock3,
   FileText,
   HelpCircle,
-  ChevronDown,
-  ChevronUp,
-  Clock3,
-  UserCircle2,
+  Lock,
+  Shield,
   Stethoscope,
+  UserCircle2,
+  Wifi,
+  WifiOff,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { logAction, logReferralCreation } from '@/lib/auditLogger';
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
 import {
   Select,
   SelectContent,
@@ -36,6 +27,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+// ─────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────
 
 interface InboxDocument {
   id: string;
@@ -53,12 +48,15 @@ interface ActionCard {
   title: string;
   body: string;
   confidence: number;
-  borderColor: string;
   priority: 'high' | 'urgent' | 'medium' | 'info';
   matchedText: string[];
   requiresReview: boolean;
   patientName: string;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Mock data
+// ─────────────────────────────────────────────────────────────
 
 const MOCK_INBOX_DOCUMENTS: InboxDocument[] = [
   {
@@ -143,9 +141,8 @@ const MOCK_ACTIONS: ActionCard[] = [
   {
     id: '1',
     title: 'AI Verdict: Cardiology Referral',
-    body: 'System detected Heart Failure (EF 35%) from discharge fax. Automating pre‑fill.',
+    body: 'Heart failure (EF 35%) detected from discharge fax.',
     confidence: 95,
-    borderColor: '#0A5C79',
     priority: 'high',
     matchedText: ['LVEF 35%', 'URGENT: Pls f/u with Cardiology'],
     requiresReview: false,
@@ -154,9 +151,8 @@ const MOCK_ACTIONS: ActionCard[] = [
   {
     id: '2',
     title: 'Alert: Overdue Lab Tracking',
-    body: 'HbA1c ordered 8 days ago. Pending results. Follow-up indicated.',
+    body: 'HbA1c ordered 8 days ago. Pending results.',
     confidence: 100,
-    borderColor: '#FF0000',
     priority: 'urgent',
     matchedText: ['HbA1c', '8 days'],
     requiresReview: false,
@@ -165,533 +161,529 @@ const MOCK_ACTIONS: ActionCard[] = [
   {
     id: '3',
     title: 'AI Triage: Low Confidence eConsult',
-    body: 'Polypharmacy detected (6 medications). Suggesting Pharmacist eConsult.',
+    body: 'Polypharmacy detected (6 medications). Suggesting eConsult.',
     confidence: 62,
-    borderColor: '#F59E0B',
     priority: 'medium',
-    matchedText: ['6 medications', 'polypharmacy'],
+    matchedText: ['6 medications', 'polypharmacy', 'eConsult'],
     requiresReview: true,
     patientName: 'Sarah Wilson',
   },
 ];
 
-const PRIORITY_LABELS: Record<ActionCard['priority'], { label: string; classes: string }> = {
-  high: { label: 'High Priority', classes: 'bg-blue-100 text-blue-800' },
-  urgent: { label: 'Urgent', classes: 'bg-red-100 text-red-800' },
-  medium: { label: 'Medium', classes: 'bg-amber-100 text-amber-800' },
-  info: { label: 'Info', classes: 'bg-slate-100 text-slate-800' },
+const PRIORITY_CONFIG: Record<ActionCard['priority'], { label: string; cls: string }> = {
+  high:   { label: 'High Priority', cls: 'bg-blue-500/15 text-blue-400 border border-blue-500/25' },
+  urgent: { label: 'Urgent',        cls: 'bg-red-500/15 text-red-400 border border-red-500/25' },
+  medium: { label: 'Medium',        cls: 'bg-amber-500/15 text-amber-400 border border-amber-500/25' },
+  info:   { label: 'Info',          cls: 'bg-muted text-muted-foreground border border-white/5' },
 };
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+
+/** Tri-State badge style: Green ≥90% | Yellow ≥70% | Red <70% */
+function confidenceBadgeStyle(conf: number) {
+  if (conf >= 90) return { cls: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25', icon: '✓' };
+  if (conf >= 70) return { cls: 'bg-amber-500/15 text-amber-400 border border-amber-500/25',   icon: '~' };
+  return              { cls: 'bg-red-500/15 text-red-400 border border-red-500/25',             icon: '!' };
+}
 
 const redactSourceText = (text: string) => {
-  let redacted = text;
-
-  redacted = redacted.replace(/\b(?:HC|healthCard|MRN)\s*[:#-]?\s*\d{4}[- ]?\d{3}[- ]?\d{3}\b/gi, '[REDACTED HEALTHCARD]');
-  redacted = redacted.replace(/\b(?:Patient|PT)\s*[: ]+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g, 'Patient: [REDACTED NAME]');
-  redacted = redacted.replace(/\b([A-Z][a-z]+)\s*,\s*([A-Z][a-z]+)\b/g, '[REDACTED NAME]');
-  redacted = redacted.replace(/\b(?:Dr\.?|Doctor)\s+[A-Z][a-z]+\s+[A-Z][a-z]+\b/g, '[REDACTED NAME]');
-  redacted = redacted.replace(/\b(?:\+?1[-.\s]?)?(?:\(?\d{2,3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED PHONE]');
-
-  return redacted;
+  let r = text;
+  r = r.replace(/\b(?:HC|healthCard|MRN)\s*[:#-]?\s*\d{4}[- ]?\d{3}[- ]?\d{3}\b/gi, '[REDACTED HEALTHCARD]');
+  r = r.replace(/\b(?:Patient|PT)\s*[: ]+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g, 'Patient: [REDACTED NAME]');
+  r = r.replace(/\b([A-Z][a-z]+)\s*,\s*([A-Z][a-z]+)\b/g, '[REDACTED NAME]');
+  r = r.replace(/\b(?:Dr\.?|Doctor)\s+[A-Z][a-z]+\s+[A-Z][a-z]+\b/g, '[REDACTED CLINICIAN]');
+  r = r.replace(/\b(?:\+?1[-.\s]?)?(?:\(?\d{2,3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED PHONE]');
+  return r;
 };
 
-const renderRedactedSource = (text: string) => {
-  const redactedText = redactSourceText(text);
-  const terms = [
-    'LVEF 35%',
-    'EF 35%',
-    'SOB',
-    'Orthopnea',
-    'Cardiology',
-    'Lasix',
-    'IV',
-    'PO',
-    'HPI',
-    'A/P',
-    'MR',
-    'ED',
-    'eConsult',
-  ];
-  const pattern = new RegExp(`(${terms.join('|')})`, 'gi');
-  const parts = redactedText.split(pattern);
+const CLINICAL_TERMS = ['LVEF 35%','EF 35%','SOB','Orthopnea','Cardiology','Lasix','IV','PO','HPI','A/P','MR','ED','eConsult','HbA1c','polypharmacy'];
+const TERM_PATTERN   = new RegExp(`(${CLINICAL_TERMS.join('|')})`, 'gi');
 
-  return parts.map((part, index) => {
-    if (index % 2 === 1 && part.match(pattern)) {
-      return (
-        <span key={`${part}-${index}`} className="bg-yellow-200 px-1 rounded">
-          {part}
-        </span>
-      );
-    }
-    return <span key={`${part}-${index}`}>{part}</span>;
-  });
-};
+const renderRedactedSource = (text: string) =>
+  redactSourceText(text).split(TERM_PATTERN).map((part, i) =>
+    i % 2 === 1
+      ? <span key={i} className="bg-amber-500/20 text-amber-300 rounded px-0.5">{part}</span>
+      : <span key={i}>{part}</span>
+  );
 
-const highlightClinicalTerms = (text: string) => {
-  const terms = [
-    'LVEF 35%',
-    'EF 35%',
-    'SOB',
-    'Orthopnea',
-    'Cardiology',
-    'Lasix',
-    'IV',
-    'PO',
-    'HPI',
-    'A/P',
-    'MR',
-    'ED',
-    'eConsult',
-  ];
-  const pattern = new RegExp(`(${terms.join('|')})`, 'gi');
-  const parts = text.split(pattern);
+const highlightClinicalTerms = (text: string) =>
+  text.split(TERM_PATTERN).map((part, i) =>
+    i % 2 === 1
+      ? <span key={i} className="bg-primary/20 text-primary rounded px-0.5">{part}</span>
+      : <span key={i}>{part}</span>
+  );
 
-  return parts.map((part, index) => {
-    if (index % 2 === 1 && part.match(pattern)) {
-      return (
-        <span key={`${part}-${index}`} className="bg-yellow-200 px-1 rounded">
-          {part}
-        </span>
-      );
-    }
-    return <span key={`${part}-${index}`}>{part}</span>;
-  });
-};
+// ─────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────
 
 export default function Clinician() {
-  const [expandedActionId, setExpandedActionId] = useState<string | null>(MOCK_ACTIONS[0]?.id ?? null);
-  const [selectedDocument, setSelectedDocument] = useState<InboxDocument | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<InboxDocument | null>(MOCK_INBOX_DOCUMENTS[0]);
   const [dispatchChannel, setDispatchChannel] = useState('OceanMD eReferral');
   const [verifiedCheckbox, setVerifiedCheckbox] = useState(false);
-  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
-  const [offlineQueue, setOfflineQueue] = useState<any[]>([]);
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'complete'>('idle');
   const [showTour, setShowTour] = useState(false);
 
-  // Detect online/offline status
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      toast.success('✅ Connection restored. Syncing changes...');
-      syncOfflineQueue();
+      toast.success('Connection restored. Syncing changes…');
+      runSync();
     };
-
     const handleOffline = () => {
       setIsOnline(false);
-      toast.error('⚠️ Offline Mode. Changes saved locally.');
+      toast.error('Offline Mode — changes saved locally.');
     };
-
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
-    const savedQueue = localStorage.getItem('offline_queue');
-    if (savedQueue) {
-      setOfflineQueue(JSON.parse(savedQueue));
-    }
-
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
-  const syncOfflineQueue = async () => {
-    if (offlineQueue.length === 0) {
-      setSyncStatus('complete');
-      setTimeout(() => setSyncStatus('idle'), 3000);
-      return;
-    }
-
+  const runSync = async () => {
+    const queue = JSON.parse(localStorage.getItem('offline_queue') || '[]');
+    if (queue.length === 0) { setSyncStatus('complete'); setTimeout(() => setSyncStatus('idle'), 3000); return; }
     setSyncStatus('syncing');
     try {
-      for (const action of offlineQueue) {
+      for (const action of queue) {
         await logReferralCreation(1, `REF-${Date.now()}`, action.patientId, action.specialist);
       }
-      setOfflineQueue([]);
       localStorage.removeItem('offline_queue');
       setSyncStatus('complete');
-      toast.success('✅ Sync Complete. All audit logs saved.');
+      toast.success('Sync complete. All audit logs saved.');
       setTimeout(() => setSyncStatus('idle'), 3000);
-    } catch (error) {
-      console.error('Sync failed:', error);
+    } catch {
       toast.error('Sync failed. Will retry when connection is stable.');
       setSyncStatus('idle');
     }
   };
 
-  const handleExecuteReferral = async (action: ActionCard) => {
-    if (!verifiedCheckbox) {
-      toast.error('Please verify the AI-extracted details');
+  const handleExecuteReferral = async () => {
+    if (!verifiedCheckbox || !selectedDocument) {
+      toast.error('Please verify the AI-extracted details first.');
       return;
     }
-
-    const auditId = `REF-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
-    const actionRecord = {
-      auditId,
-      patientId: 'patient-1',
-      specialist: action.title.includes('Cardiology') ? 'Cardiology' : 'Consultation',
-      timestamp: new Date().toISOString(),
-    };
+    const auditId   = `REF-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
+    const specialist = selectedDocument.specialist ?? 'Consultation';
 
     if (!isOnline) {
-      const newQueue = [...offlineQueue, actionRecord];
-      setOfflineQueue(newQueue);
-      localStorage.setItem('offline_queue', JSON.stringify(newQueue));
-      toast.success(`⚠️ Offline Mode. Saved locally. Will sync when online.`);
+      const queue = JSON.parse(localStorage.getItem('offline_queue') || '[]');
+      queue.push({ auditId, patientId: 'patient-1', specialist, timestamp: new Date().toISOString() });
+      localStorage.setItem('offline_queue', JSON.stringify(queue));
+      toast.success('Offline Mode — saved locally. Will sync when online.');
     } else {
-      await logReferralCreation(1, auditId, 'patient-1', actionRecord.specialist);
+      await logReferralCreation(1, auditId, 'patient-1', specialist);
       await logAction({
         actorId: 1,
         action: 'CREATE_REFERRAL',
         resourceType: 'referral',
         resourceId: auditId,
-        details: {
-          patientId: 'patient-1',
-          specialistDomain: actionRecord.specialist,
-          dispatchChannel,
-          timestamp: new Date().toISOString(),
-        },
+        details: { patientId: 'patient-1', specialistDomain: specialist, dispatchChannel, timestamp: new Date().toISOString() },
       });
-      toast.success(`✅ Referral submitted via ${dispatchChannel}. Audit Log #${auditId} recorded.`);
+      toast.success(`Referral submitted via ${dispatchChannel}. Audit Log #${auditId} recorded.`);
     }
-
     setVerifiedCheckbox(false);
   };
 
-  const toggleExpand = (id: string) => {
-    setExpandedActionId((prev) => (prev === id ? null : id));
-    setVerifiedCheckbox(false);
-  };
+  const selectedAction = MOCK_ACTIONS.find(a => selectedDocument && a.patientName === selectedDocument.patientName);
+  const priority       = selectedAction ? PRIORITY_CONFIG[selectedAction.priority] : null;
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-slate-50 font-inter">
-      {/* STATS BAR */}
-      <div className="flex-none p-6 border-b bg-white shadow-sm z-10">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className="text-xs bg-blue-50">
-              <Zap className="w-3 h-3 mr-1" />
-              Referrals: 12
+    <div className="h-screen flex flex-col overflow-hidden bg-background">
+
+      {/* ══════════════════════════════════════════════════════
+          SLIM HEADER
+      ══════════════════════════════════════════════════════ */}
+      <header className="flex-none h-[52px] flex items-center justify-between px-5 border-b border-white/5 bg-card/60 backdrop-blur-sm">
+        {/* Left: branding + status pills */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-primary" />
+            <span className="font-semibold text-sm text-foreground">Health Guardian</span>
+          </div>
+          <div className="h-4 w-px bg-white/10" />
+          <div className="flex items-center gap-1.5">
+            {isOnline ? (
+              <Badge className="h-5 px-2 text-[10px] gap-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/15">
+                <Wifi className="w-2.5 h-2.5" /> Online
+              </Badge>
+            ) : (
+              <Badge className="h-5 px-2 text-[10px] gap-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/20 hover:bg-red-500/15">
+                <WifiOff className="w-2.5 h-2.5" /> Offline
+              </Badge>
+            )}
+            <Badge className="h-5 px-2 text-[10px] gap-1 rounded-full bg-primary/10 text-primary border border-primary/20 hover:bg-primary/10">
+              <Zap className="w-2.5 h-2.5" /> 12 Referrals
             </Badge>
-            <Badge variant="outline" className="text-xs bg-green-50">
-              <CheckCircle2 className="w-3 h-3 mr-1" />
-              Labs: 8
-            </Badge>
-            <Badge variant="outline" className="text-xs bg-amber-50">
-              ⏱️ Time Saved: 3.2 hrs
-            </Badge>
-            <Badge variant="outline" className="text-xs">
-              {isOnline ? (
-                <>
-                  <Wifi className="w-3 h-3 mr-1" />
-                  🟢 Online
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-3 h-3 mr-1" />
-                  🔴 Offline
-                </>
-              )}
+            <Badge className="h-5 px-2 text-[10px] gap-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/15">
+              <CheckCircle2 className="w-2.5 h-2.5" /> 8 Labs
             </Badge>
             {syncStatus === 'syncing' && (
-              <Badge variant="outline" className="text-xs bg-blue-50 animate-pulse">
-                🔄 Syncing...
+              <Badge className="h-5 px-2 text-[10px] rounded-full bg-primary/10 text-primary border border-primary/20 animate-pulse hover:bg-primary/10">
+                Syncing…
               </Badge>
             )}
             {syncStatus === 'complete' && (
-              <Badge variant="outline" className="text-xs bg-green-50">
-                ✅ Synced
+              <Badge className="h-5 px-2 text-[10px] rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/15">
+                Synced
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
-              <Shield className="w-4 h-4" />
-              🛡️ Audit Active
+        </div>
+        {/* Right: audit status + help */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Shield className="w-3.5 h-3.5 text-primary" />
+            <span>Audit Active</span>
+          </div>
+          <button
+            onClick={() => setShowTour(true)}
+            className="w-7 h-7 flex items-center justify-center rounded-full border border-white/10 text-muted-foreground hover:text-foreground hover:border-white/20 transition-colors"
+            aria-label="Open Responsible AI Tour"
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </header>
+
+      {/* ══════════════════════════════════════════════════════
+          BENTO GRID
+      ══════════════════════════════════════════════════════ */}
+      <div className="flex-1 min-h-0 p-4 grid grid-cols-12 gap-4">
+
+        {/* ────────────── LEFT: INBOX (span-4) ────────────── */}
+        <div className="col-span-4 flex flex-col min-h-0 bg-card rounded-3xl border border-white/5 overflow-hidden">
+          {/* Inbox header */}
+          <div className="flex-none px-4 py-3 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+              <h2 className="text-sm font-semibold text-foreground">Inbox</h2>
             </div>
-            <button
-              onClick={() => setShowTour(true)}
-              className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
-              title="Responsible AI Tour"
-              aria-label="Start Responsible AI Tour"
-            >
-              <HelpCircle className="w-4 h-4" />
-            </button>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+              {MOCK_INBOX_DOCUMENTS.length}
+            </span>
+          </div>
+
+          {/* Inbox items */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+            {MOCK_INBOX_DOCUMENTS.map(doc => {
+              const action  = MOCK_ACTIONS.find(a => a.patientName === doc.patientName);
+              const conf    = action?.confidence ?? doc.confidence ?? 0;
+              const badge   = confidenceBadgeStyle(conf);
+              const isActive = selectedDocument?.id === doc.id;
+
+              return (
+                <button
+                  key={doc.id}
+                  onClick={() => { setSelectedDocument(doc); setVerifiedCheckbox(false); }}
+                  className={`w-full text-left rounded-2xl transition-all relative overflow-hidden ${
+                    isActive
+                      ? 'bg-primary/10 border border-primary/25'
+                      : 'bg-background/30 border border-white/5 hover:bg-muted/50 hover:border-white/10'
+                  }`}
+                >
+                  {/* Active teal left-border accent */}
+                  {isActive && (
+                    <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-primary rounded-l-2xl" />
+                  )}
+                  <div className="p-4 pl-5">
+                    <div className="flex items-start justify-between gap-2 mb-1.5">
+                      <span className={`text-sm font-semibold leading-none ${isActive ? 'text-foreground' : 'text-foreground/80'}`}>
+                        {doc.patientName}
+                      </span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 border ${badge.cls}`}>
+                        {badge.icon} {conf}%
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-none">{doc.documentType}</p>
+                    <p className="text-[10px] text-muted-foreground/50 mt-1.5">{doc.timestamp}</p>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
-      </div>
 
-      {/* ACTION CARDS CONTAINER (Allow internal scrolling only) */}
-      <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-4 custom-scrollbar pt-6">
-        {MOCK_ACTIONS.map((action) => {
-          const document = MOCK_INBOX_DOCUMENTS.find((d) => d.patientName === action.patientName);
-          const isExpanded = expandedActionId === action.id;
-          const priority = PRIORITY_LABELS[action.priority];
+        {/* ────────────── RIGHT: AI ORCHESTRATOR (span-8) ────────────── */}
+        <div className="col-span-8 overflow-y-auto custom-scrollbar">
+          {selectedDocument ? (
+            <div className="space-y-4 pb-2">
 
-          return (
-            <Card
-              key={action.id}
-              className="bg-white rounded-2xl shadow-md border-l-4 p-5 transition-all hover:shadow-xl"
-              style={{ borderLeftColor: action.borderColor }}
-            >
-              {/* Card Header (clickable) */}
-              <div
-                className="cursor-pointer"
-                onClick={() => toggleExpand(action.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggleExpand(action.id);
-                  }
-                }}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <Badge className={`text-xs ${priority.classes}`}>{priority.label}</Badge>
-                      {action.requiresReview && (
-                        <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700">
-                          <AlertCircle className="w-3 h-3 mr-1" />
-                          Review Required
-                        </Badge>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedDocument(document ?? null);
-                        }}
-                        className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-blue-700 transition-colors"
-                      >
-                        <FileText className="w-3 h-3" />
-                        {action.patientName}
-                      </button>
-                    </div>
-                    <h3 className="text-base font-bold text-slate-900 mb-1">{action.title}</h3>
-                    <p className="text-sm text-slate-600">{action.body}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                    <Badge
-                      className={
-                        action.confidence >= 90
-                          ? 'bg-green-100 text-green-800'
-                          : action.confidence >= 70
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-red-100 text-red-800'
-                      }
-                    >
-                      ✅ {action.confidence}%
-                    </Badge>
-                    {isExpanded ? (
-                      <ChevronUp className="w-5 h-5 text-slate-400" />
-                    ) : (
-                      <ChevronDown className="w-5 h-5 text-slate-400" />
+              {/* ── PATIENT HEADER ── */}
+              <div className="bg-card rounded-3xl border border-white/5 p-5 flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-primary mb-2">
+                    Patient Workspace
+                  </p>
+                  <h2 className="text-2xl font-bold text-foreground">{selectedDocument.patientName}</h2>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {selectedDocument.documentType} · {selectedDocument.timestamp}
+                  </p>
+                </div>
+                {priority && selectedAction && (
+                  <div className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-semibold border ${priority.cls}`}>
+                    {selectedAction.priority === 'urgent'
+                      ? <AlertCircle className="w-4 h-4" />
+                      : <CheckCircle2 className="w-4 h-4" />
+                    }
+                    {priority.label}
+                    {selectedAction.requiresReview && (
+                      <Lock className="w-3.5 h-3.5 opacity-70" />
                     )}
                   </div>
+                )}
+              </div>
+
+              {/* ── EXTRACTED FIELDS BENTO ── */}
+              <div className="grid grid-cols-2 gap-4">
+
+                {/* Diagnosis */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Diagnosis
+                    </p>
+                    {(() => {
+                      const b = confidenceBadgeStyle(selectedDocument.confidence ?? 0);
+                      return (
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${b.cls}`}>
+                          {b.icon} {selectedDocument.confidence}% confidence
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <p className="text-2xl font-bold text-foreground leading-snug">
+                    {selectedDocument.diagnosis ?? '—'}
+                  </p>
+                </div>
+
+                {/* Recommended Specialist */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Recommended Specialist
+                    </p>
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/15 text-primary border border-primary/25">
+                      AI Matched
+                    </span>
+                  </div>
+                  <p className="text-2xl font-bold text-foreground">
+                    {selectedDocument.specialist ?? '—'}
+                  </p>
                 </div>
               </div>
 
-              {/* Expanded Detail View */}
-              {isExpanded && document && (
-                <div className="mt-5 pt-5 border-t border-slate-200 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
-                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                        Extracted Specialist
-                      </p>
-                      <p className="text-sm font-bold text-slate-900 mt-1">{document.specialist}</p>
-                    </div>
-                    <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
-                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Diagnosis</p>
-                      <p className="text-sm text-slate-900 mt-1">{document.diagnosis}</p>
-                    </div>
-                  </div>
-                  <Button
-                    variant="outline"
-                    onClick={() => setSelectedDocument(document)}
-                    className="w-full rounded-full"
-                  >
-                    Open Review & Execute Panel
-                  </Button>
-                </div>
-              )}
-            </Card>
-          );
-        })}
-      </div>
+              {/* ── EVIDENCE GRID ── */}
+              <div className="grid grid-cols-2 gap-4">
 
-      <Sheet open={!!selectedDocument} onOpenChange={(open) => !open && setSelectedDocument(null)}>
-        <SheetContent side="right" className="w-full sm:max-w-5xl overflow-y-auto">
-          {selectedDocument && (
-            <div className="space-y-6 py-2">
-              <SheetHeader>
-                <SheetTitle className="text-2xl">{selectedDocument.patientName}</SheetTitle>
-                <SheetDescription>
-                  {selectedDocument.documentType} • {selectedDocument.timestamp}
-                </SheetDescription>
-              </SheetHeader>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card className="p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-                    <UserCircle2 className="w-4 h-4" />
-                    Care Team
+                {/* Original source (PHI-redacted) */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Original Source
+                    </p>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground border border-white/5">
+                      PHI Redacted
+                    </span>
                   </div>
-                  <div className="mt-3 space-y-3">
-                    <div className="flex items-center justify-between rounded-lg border p-3">
-                      <div>
-                        <p className="text-sm font-semibold">Dr. Robert Lee</p>
-                        <p className="text-xs text-slate-500">Primary Care</p>
-                      </div>
-                      <Stethoscope className="w-4 h-4 text-slate-400" />
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg border p-3">
-                      <div>
-                        <p className="text-sm font-semibold">Cardiology Consult</p>
-                        <p className="text-xs text-slate-500">Recommended Specialist</p>
-                      </div>
-                      <Shield className="w-4 h-4 text-slate-400" />
-                    </div>
-                  </div>
-                </Card>
-                <Card className="p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-                    <Clock3 className="w-4 h-4" />
-                    Timeline Snapshot
-                  </div>
-                  <div className="mt-3 space-y-3 text-sm text-slate-600">
-                    <div className="flex items-start gap-2">
-                      <span className="w-2 h-2 rounded-full bg-blue-500 mt-2" />
-                      <span>Hospital discharge summary received 2 hours ago</span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="w-2 h-2 rounded-full bg-green-500 mt-2" />
-                      <span>Lab review flagged for cardiology follow-up</span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="w-2 h-2 rounded-full bg-amber-500 mt-2" />
-                      <span>Referral pending clinician verification</span>
-                    </div>
-                  </div>
-                </Card>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-slate-50 rounded-xl border p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Original Source</p>
-                    <Badge variant="outline" className="bg-slate-50">
-                      [REDACTED] PHI Protected
-                    </Badge>
-                  </div>
-                  <div className="text-xs font-mono text-slate-700 whitespace-pre-wrap break-words bg-white rounded-lg border border-slate-200 p-4 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                  <div className="text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-words bg-background/60 rounded-2xl border border-white/5 p-3 max-h-52 overflow-y-auto custom-scrollbar leading-5">
                     {renderRedactedSource(selectedDocument.rawText)}
                   </div>
                 </div>
 
-                <div className="bg-slate-50 rounded-xl border p-4 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI Extraction</p>
-                    <Badge className="bg-green-100 text-green-800">{selectedDocument.confidence ?? 0}% confidence</Badge>
+                {/* AI evidence trail */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      AI Evidence Trail
+                    </p>
+                    {selectedAction && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                        {selectedAction.matchedText.length} signals
+                      </span>
+                    )}
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-lg bg-white border p-3">
-                      <p className="text-xs font-semibold text-slate-500">Diagnosis</p>
-                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument.diagnosis}</p>
-                    </div>
-                    <div className="rounded-lg bg-white border p-3">
-                      <p className="text-xs font-semibold text-slate-500">Specialist</p>
-                      <p className="text-sm font-bold text-slate-900 mt-1">{selectedDocument.specialist}</p>
-                    </div>
+                  <div className="text-[11px] text-muted-foreground leading-5 bg-background/60 rounded-2xl border border-white/5 p-3 max-h-36 overflow-y-auto custom-scrollbar">
+                    {highlightClinicalTerms(selectedDocument.rawText)}
                   </div>
-                  <div className="rounded-lg bg-white border p-3">
-                    <p className="text-xs font-semibold text-slate-500">Highlighted Source Terms</p>
-                    <p className="text-sm text-slate-700 mt-2 leading-6">
-                      {highlightClinicalTerms(selectedDocument.rawText)}
+                  {selectedAction && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {selectedAction.matchedText.map((term, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono"
+                        >
+                          {term}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── CARE TEAM + TIMELINE ── */}
+              <div className="grid grid-cols-2 gap-4">
+
+                {/* Care team */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <UserCircle2 className="w-3.5 h-3.5 text-muted-foreground" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Care Team
                     </p>
                   </div>
-                  <div className="bg-white border rounded-lg p-4">
-                    <div className="flex items-start gap-3">
-                      <Checkbox
-                        id={`verify-sheet-${selectedDocument.id}`}
-                        checked={verifiedCheckbox}
-                        onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <Label htmlFor={`verify-sheet-${selectedDocument.id}`} className="text-sm font-semibold cursor-pointer">
-                          I verify these AI-extracted clinical details
-                        </Label>
-                        <p className="text-xs text-slate-600 mt-1">Human verification required before dispatch.</p>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-background/40 border border-white/5">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">Dr. Robert Lee</p>
+                        <p className="text-xs text-muted-foreground">Primary Care</p>
                       </div>
+                      <Stethoscope className="w-4 h-4 text-muted-foreground/40" />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-background/40 border border-white/5">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">
+                          {selectedDocument.specialist ?? 'Specialist'} Consult
+                        </p>
+                        <p className="text-xs text-muted-foreground">Recommended Specialist</p>
+                      </div>
+                      <Shield className="w-4 h-4 text-muted-foreground/40" />
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="dispatch-channel" className="text-sm font-semibold">Dispatch Channel</Label>
+                </div>
+
+                {/* Timeline snapshot */}
+                <div className="bg-card rounded-3xl border border-white/5 p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Clock3 className="w-3.5 h-3.5 text-muted-foreground" />
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Timeline Snapshot
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    {[
+                      { color: 'bg-primary',       text: `Document received ${selectedDocument.timestamp}` },
+                      { color: 'bg-emerald-400',   text: 'PHI de-identified by AI pipeline' },
+                      { color: 'bg-amber-400',     text: 'Pending clinician verification' },
+                    ].map(({ color, text }, i) => (
+                      <div key={i} className="flex items-start gap-3">
+                        <div className={`w-2 h-2 rounded-full ${color} mt-1.5 shrink-0`} />
+                        <p className="text-xs text-muted-foreground leading-relaxed">{text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── HITL SIGN-OFF ── */}
+              <div className={`rounded-3xl border p-5 transition-all duration-300 ${
+                verifiedCheckbox
+                  ? 'bg-primary/5 border-primary/30 shadow-lg shadow-primary/5'
+                  : 'bg-card border-white/5'
+              }`}>
+                <div className="flex items-start justify-between gap-6 flex-wrap">
+                  {/* Checkbox + description */}
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                    <Checkbox
+                      id="verify-hitl"
+                      checked={verifiedCheckbox}
+                      onCheckedChange={(checked) => setVerifiedCheckbox(checked as boolean)}
+                      className="mt-0.5 border-white/20 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                    />
+                    <div>
+                      <Label
+                        htmlFor="verify-hitl"
+                        className="text-sm font-semibold text-foreground cursor-pointer"
+                      >
+                        I verify these AI-extracted clinical details are accurate
+                      </Label>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Human verification required before dispatch. This action is immutably audit-logged.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Dispatch + submit */}
+                  <div className="flex items-center gap-3 shrink-0">
                     <Select value={dispatchChannel} onValueChange={setDispatchChannel}>
-                      <SelectTrigger id="dispatch-channel" className="w-full">
-                        <SelectValue placeholder="Select dispatch channel" />
+                      <SelectTrigger className="w-44 h-9 text-xs bg-background/60 border-white/10 rounded-xl">
+                        <SelectValue placeholder="Dispatch channel" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="bg-card border-white/10">
                         <SelectItem value="OceanMD eReferral">OceanMD eReferral</SelectItem>
-                        <SelectItem value="Print/Send Fax">Print/Send Fax</SelectItem>
+                        <SelectItem value="Print/Send Fax">Print / Send Fax</SelectItem>
                         <SelectItem value="Internal Outbox">Internal Outbox</SelectItem>
                       </SelectContent>
                     </Select>
+                    <Button
+                      onClick={handleExecuteReferral}
+                      disabled={!verifiedCheckbox}
+                      className={`h-9 px-5 rounded-xl text-sm font-semibold transition-all duration-200 ${
+                        verifiedCheckbox
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20'
+                          : 'bg-muted text-muted-foreground opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      Submit Referral
+                    </Button>
                   </div>
-                  <Button
-                    onClick={() => handleExecuteReferral({
-                      id: selectedDocument.id,
-                      title: selectedDocument.documentType,
-                      body: selectedDocument.diagnosis ?? '',
-                      confidence: selectedDocument.confidence ?? 0,
-                      borderColor: '#0A5C79',
-                      priority: 'high',
-                      matchedText: [],
-                      requiresReview: false,
-                      patientName: selectedDocument.patientName,
-                    })}
-                    className="w-full rounded-full font-semibold py-5"
-                    style={{
-                      backgroundColor: verifiedCheckbox ? '#0A5C79' : '#cbd5e1',
-                      opacity: verifiedCheckbox ? 1 : 0.5,
-                      cursor: verifiedCheckbox ? 'pointer' : 'not-allowed',
-                      pointerEvents: verifiedCheckbox ? 'auto' : 'none',
-                    }}
-                  >
-                    Submit Referral
-                  </Button>
                 </div>
+              </div>
+
+            </div>
+          ) : (
+            /* Empty state */
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center">
+                <FileText className="w-12 h-12 text-muted-foreground/20 mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground">Select an inbox item to begin review</p>
               </div>
             </div>
           )}
-        </SheetContent>
-      </Sheet>
+        </div>
 
-      {/* ONBOARDING TOUR MODAL */}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════
+          ONBOARDING TOUR MODAL
+      ══════════════════════════════════════════════════════ */}
       {showTour && (
-        <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-8">
-          <Card className="max-w-lg w-full p-8 bg-white shadow-2xl">
-            <h2 className="text-xl font-bold text-[#0A5C79] mb-4">Responsible AI Tour</h2>
-            <div className="space-y-4 text-sm">
-              <p>
-                <strong>Step 1:</strong> Action Cards proactively surface tasks.
-              </p>
-              <p>
-                <strong>Step 2:</strong> De-identification pipeline strips PHI before the AI sees text.
-              </p>
-              <p>
-                <strong>Step 3:</strong> Human-in-the-Loop checkbox ensures the doctor verifies the AI's work.
-              </p>
-              <p>
-                <strong>Step 4:</strong> Every action logs to the immutable Audit Trail.
-              </p>
+        <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-8">
+          <div className="max-w-md w-full bg-card border border-white/10 rounded-3xl p-8 shadow-2xl shadow-black/60">
+            <div className="flex items-center gap-3 mb-2">
+              <Activity className="w-5 h-5 text-primary" />
+              <h2 className="text-xl font-bold text-foreground">Responsible AI Tour</h2>
             </div>
-            <Button className="w-full mt-6" onClick={() => setShowTour(false)}>
+            <p className="text-xs text-muted-foreground mb-6">
+              How Health Guardian keeps clinicians in control at every step.
+            </p>
+            <div className="space-y-4">
+              {[
+                { n: '01', text: 'Action Cards proactively surface triage tasks from incoming documents.' },
+                { n: '02', text: 'De-identification pipeline strips PHI before the AI processes any text.' },
+                { n: '03', text: 'Human-in-the-Loop checkbox ensures the clinician reviews AI outputs before dispatch.' },
+                { n: '04', text: 'Every action is logged to the immutable Audit Trail for PIPEDA/PHIPA compliance.' },
+              ].map(({ n, text }) => (
+                <div key={n} className="flex items-start gap-3">
+                  <span className="text-[10px] font-bold text-primary/50 mt-0.5 w-5 shrink-0">{n}</span>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{text}</p>
+                </div>
+              ))}
+            </div>
+            <Button
+              className="w-full mt-6 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={() => setShowTour(false)}
+            >
               Got it
             </Button>
-          </Card>
+          </div>
         </div>
       )}
     </div>
