@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { useReferralStore } from '@/lib/store';
@@ -25,12 +26,6 @@ PLAN: D/C home on PO Lasix 40mg daily.
   },
 ];
 
-const PRIORITY_CONFIG: Record<ActionCard['priority'], { label: string; cls: string }> = {
-  high:   { label: 'High Priority', cls: 'bg-blue-500/15 text-blue-400 border border-blue-500/25' },
-  urgent: { label: 'Urgent',        cls: 'bg-red-500/15 text-red-400 border border-red-500/25' },
-  medium: { label: 'Medium',        cls: 'bg-amber-500/15 text-amber-400 border border-amber-500/25' },
-  info:   { label: 'Info',          cls: 'bg-muted text-muted-foreground border border-white/5' },
-};
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -268,7 +263,7 @@ export default function Clinician() {
             <p className="text-sm text-slate-500">Select a fax to view AI analysis</p>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
