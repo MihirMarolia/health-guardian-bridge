@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { useReferralStore } from '@/lib/store';
@@ -25,6 +24,55 @@ PLAN: D/C home on PO Lasix 40mg daily.
 *** URGENT: Pls f/u with Cardiology outpatient clinic w/in 7-14 days. ***`,
   },
 ];
+
+const PRIORITY_CONFIG: Record<ActionCard['priority'], { label: string; cls: string }> = {
+  high:   { label: 'High Priority', cls: 'bg-blue-500/15 text-blue-400 border border-blue-500/25' },
+  urgent: { label: 'Urgent',        cls: 'bg-red-500/15 text-red-400 border border-red-500/25' },
+  medium: { label: 'Medium',        cls: 'bg-amber-500/15 text-amber-400 border border-amber-500/25' },
+  info:   { label: 'Info',          cls: 'bg-muted text-muted-foreground border border-white/5' },
+};
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+
+/** Tri-State badge style: Green ≥90% | Yellow ≥70% | Red <70% */
+function confidenceBadgeStyle(conf: number) {
+  if (conf >= 90) return { cls: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25', icon: '✓' };
+  if (conf >= 70) return { cls: 'bg-amber-500/15 text-amber-400 border border-amber-500/25',   icon: '~' };
+  return              { cls: 'bg-red-500/15 text-red-400 border border-red-500/25',             icon: '!' };
+}
+
+const redactSourceText = (text: string) => {
+  let r = text;
+  r = r.replace(/\b(?:HC|healthCard|MRN)\s*[:#-]?\s*\d{4}[- ]?\d{3}[- ]?\d{3}\b/gi, '[REDACTED HEALTHCARD]');
+  r = r.replace(/\b(?:Patient|PT)\s*[: ]+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g, 'Patient: [REDACTED NAME]');
+  r = r.replace(/\b([A-Z][a-z]+)\s*,\s*([A-Z][a-z]+)\b/g, '[REDACTED NAME]');
+  r = r.replace(/\b(?:Dr\.?|Doctor)\s+[A-Z][a-z]+\s+[A-Z][a-z]+\b/g, '[REDACTED CLINICIAN]');
+  r = r.replace(/\b(?:\+?1[-.\s]?)?(?:\(?\d{2,3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED PHONE]');
+  return r;
+};
+
+const CLINICAL_TERMS = ['LVEF 35%','EF 35%','SOB','Orthopnea','Cardiology','Lasix','IV','PO','HPI','A/P','MR','ED','eConsult','HbA1c','polypharmacy'];
+const TERM_PATTERN   = new RegExp(`(${CLINICAL_TERMS.join('|')})`, 'gi');
+
+const renderRedactedSource = (text: string) =>
+  redactSourceText(text).split(TERM_PATTERN).map((part, i) =>
+    i % 2 === 1
+      ? <span key={i} className="bg-amber-500/20 text-amber-300 rounded px-0.5">{part}</span>
+      : <span key={i}>{part}</span>
+  );
+
+const highlightClinicalTerms = (text: string) =>
+  text.split(TERM_PATTERN).map((part, i) =>
+    i % 2 === 1
+      ? <span key={i} className="bg-primary/20 text-primary rounded px-0.5">{part}</span>
+      : <span key={i}>{part}</span>
+  );
+
+// ─────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────
 
 export default function Clinician() {
   const [selectedFaxId, setSelectedFaxId] = useState<string>('1');
@@ -220,7 +268,7 @@ export default function Clinician() {
             <p className="text-sm text-slate-500">Select a fax to view AI analysis</p>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { trpcVanilla } from './trpc';
 
 // Tri-State AI Extraction Model
 export type FieldStatus = 'filled' | 'review' | 'missing';
